@@ -41,7 +41,8 @@ class Reformulator:
             "finnish": "Finnish", "greek": "Greek", "hebrew": "Hebrew",
             "indonesian": "Indonesian", "khmer": "Khmer", "lao": "Lao",
             "malay": "Malay", "norwegian": "Norwegian", "swahili": "Swahili",
-            "tagalog": "Tagalog", "thai": "Thai", "vietnamese": "Vietnamese"
+            "tagalog": "Tagalog", "thai": "Thai", "vietnamese": "Vietnamese",
+            "bulgarian": "Bulgarian"
         }
         if code in names:
             return names[code]
@@ -68,7 +69,8 @@ class Reformulator:
             "fi": "Finnish", "el": "Greek", "he": "Hebrew",
             "id": "Indonesian", "km": "Khmer", "lo": "Lao",
             "ms": "Malay", "no": "Norwegian", "sw": "Swahili",
-            "tl": "Tagalog", "th": "Thai", "vi": "Vietnamese"
+            "tl": "Tagalog", "th": "Thai", "vi": "Vietnamese",
+            "bul": "Bulgarian", "bg": "Bulgarian"
         }
         for prefix, name in name_map.items():
             if code.startswith(prefix):

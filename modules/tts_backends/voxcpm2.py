@@ -19,6 +19,10 @@ class VoxCPM2Backend(TTSBackend):
     def capabilities(self) -> dict:
         return {
             "languages": "all",  # VoxCPM2 supports 30 languages natively, no language tag needed
+            # Explicitly NOT supported despite the "all" wildcard above: VoxCPM2 ships
+            # no Bulgarian voice (verified against the openbmb/VoxCPM2 HF language tags).
+            # Route Bulgarian to the Edge-TTS BG backend instead.
+            "excluded_languages": ["bg"],
             "speed_control": False,
             "duration_control": False,
             "multi_speaker": False,

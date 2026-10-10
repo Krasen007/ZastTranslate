@@ -17,6 +17,9 @@ voxcpm>=2.0.2
 scenedetect>=0.7.1
 opencv-python>=4.8.0
 
+# Bulgarian neural dubbing (Edge-TTS BG backend) — cloud, 0 VRAM, needs internet
+edge-tts>=6.1.12
+
 # YouTube API Integration
 google-api-python-client>=2.0.0
 google-auth-httplib2>=0.1.0

@@ -50,6 +50,7 @@ CHARS_PER_SECOND = {
     "latin": 13,      # FR, EN, ES, DE, IT, PT (balance: reformulation quality vs TTS fit)
     "cjk": 7,         # ZH, JA, KO
     "arabic": 12,     # AR
+    "cyrillic": 11,   # BG, RU, UK — Cyrillic carries fewer chars per second than Latin
     "default": 13
 }
 
@@ -99,4 +100,6 @@ LANGUAGES = {
     "Tagalog": "tgl_Latn",
     "Thai": "tha_Thai",
     "Vietnamese": "vie_Latn",
+    # Bulgarian — subtitles/SEO via LLM, dubbing via the Edge-TTS BG backend
+    "Bulgarian": "bul_Cyrl",
 }

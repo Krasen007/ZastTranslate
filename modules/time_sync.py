@@ -39,6 +39,10 @@ class TimeSync:
         """Map language codes to language families for duration estimation."""
         cjk = ["jpn", "zho", "kor", "ja", "zh", "ko"]
         arabic = ["arb", "ar"]
+        cyrillic = ["rus", "bul", "ukr", "srp", "bel", "mkd", "ru", "bg", "uk"]
+        for prefix in cyrillic:
+            if lang_code.startswith(prefix):
+                return "cyrillic"
         for prefix in cjk:
             if lang_code.startswith(prefix):
                 return "cjk"

@@ -176,9 +176,9 @@ Both columns are editable. The **Fitted** column is what will be spoken during d
 
 **Supported languages:** The dropdown automatically updates based on the **intersection** of the capabilities of the selected **TTS Backend** (Tab 1) and **LLM Backend** (Tab 2).
 For example:
-- **TTS:** VoxCPM 2 supports 30 languages (Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, Vietnamese).
-- **LLM:** Qwen2.5/3.5 support all languages. EuroLLM supports only European languages.
-If you combine EuroLLM (European) with VoxCPM 2, only the European languages supported by both will be available.
+- **TTS:** VoxCPM 2 supports 30 languages (Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, Vietnamese). **Edge-TTS BG** adds Bulgarian (`bg-BG-BorislavNeural` / `bg-BG-KalinaNeural`) and English over the network — 0 VRAM, no voice cloning.
+- **LLM:** Qwen2.5/3.5 support all languages. EuroLLM supports 24 European languages (FR, EN, ES, DE, IT, PT, NL, PL, SV, CS, RO, HU, **BG**, EL, FI, DA, NO, UK, SL, SK, HR, LT, LV, ET).
+If you combine EuroLLM (European) with VoxCPM 2, only the European languages supported by both will be available. For **Bulgarian dubbing**, select the **Edge-TTS BG** engine in Tab 1 (voice cloning is unavailable for that engine).
 
 ### Step 4 — Dubbing & Export
 
@@ -205,6 +205,7 @@ Under the main dialogue segments table, a specialized **Segment Editor Card** op
 | **Clone from file** | Uses an uploaded WAV/MP3 file as voice reference | When you want a specific voice (10-30s of clear speech) |
 
 > 💡 Voice cloning uses **VoxCPM 2**, installed automatically during setup.
+> Cloning options are automatically hidden when the selected TTS engine cannot clone (e.g. **Edge-TTS BG**) or when the target language has no clonable voice (**Bulgarian** — use `Default voice` with the native `bg-BG` voices).
 
 **🔊 Never Cut Vocal** mode speaks all text in full without truncation. Produces more natural speech but dubbing may drift out of sync with the video.
 

@@ -16,7 +16,10 @@ FITTED_CPS_BY_LANG = {
     # Latin autres
     "id": 8.5, "ms": 8.5, "vi": 9.0, "tl": 8.5, "sw": 8.5,
     # Cyrillique
-    "ru": 8.0,
+    # bg = Edge-TTS BG native bg-BG voices measured at ~10.8 chars/sec; 8.0 is kept
+    # intentionally conservative so the fitted reformulator under-fills rather than
+    # overflowing the slot (time_sync's rate% boost then absorbs the remainder).
+    "ru": 8.0, "bg": 8.0, "uk": 8.0,
     # Abjads
     "ar": 7.0, "he": 7.0,
     # Abugidas

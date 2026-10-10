@@ -31,7 +31,9 @@ def get_available_backends() -> dict:
             name="EuroLLM-9B-Instruct (European Languages — 12 GB+)",
             model_id="utter-project/EuroLLM-9B-Instruct",
             capabilities={
-                "languages": ["en", "fr", "es", "de", "it", "pt", "nl", "pl", "sv", "cs", "ro", "hu"],
+                # 24 languages, matching the upstream EuroLLM-9B-Instruct HF language tags.
+                "languages": ["en", "fr", "es", "de", "it", "pt", "nl", "pl", "sv", "cs", "ro", "hu",
+                              "bg", "el", "fi", "da", "no", "uk", "sl", "sk", "hr", "lt", "lv", "et"],
                 "vram_gb": 6.0
             }
         )

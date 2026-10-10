@@ -136,6 +136,13 @@ except ImportError:
     errors.append("voxcpm")
     print("[FAIL] voxcpm not installed")
 
+# 14. edge-tts (optional — Bulgarian dubbing via the Edge-TTS BG backend)
+try:
+    import edge_tts
+    print("[OK] edge-tts (Bulgarian neural dubbing available)")
+except ImportError:
+    print("[INFO] edge-tts not installed (optional) — Bulgarian dubbing unavailable")
+
 # Summary
 print("=" * 50)
 if errors:
