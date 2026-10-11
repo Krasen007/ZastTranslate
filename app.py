@@ -42,6 +42,14 @@ from modules.translator import Translator
 from modules.reformulator import Reformulator
 from modules.tts_backends.factory import get_backend as get_tts_backend, get_available_backends as get_available_tts_backends
 from modules.llm_backends.factory import get_backend as get_llm_backend, get_available_backends as get_available_llm_backends
+from modules.llm_backends import (
+    CUSTOM_BACKEND_NAME,
+    get_custom_model_path,
+    set_custom_model_path,
+    is_custom_path_valid,
+    clear_custom_model_path,
+    reset_custom_backend_cache,
+)
 from modules.time_sync import TimeSync
 from modules.audio_mixer import AudioMixer
 from modules.video_assembler import VideoAssembler
@@ -4175,6 +4183,7 @@ def _get_tab_guide_html(tab_num: int) -> str:
             "options": [
                 "<b style='color:#ffffff !important;'>Source Language</b>: <span style='color:#f1f5f9 !important;'>Leave on <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Auto</code> for automatic language detection, or pick your language for a speed boost.</span>",
                 "<b style='color:#ffffff !important;'>Whisper Model</b>: <span style='color:#f1f5f9 !important;'><code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>base</code> is ultra-fast (~30s, 2GB VRAM). <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>large-v3</code> provides studio precision for slang, technical jargon, and accents.</span>",
+                "<b style='color:#ffffff !important;'>LLM Model (Translation / SEO)</b>: <span style='color:#f1f5f9 !important;'>Predefined Qwen/EuroLLM brains, or <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Custom (Manual local model)</code> to use your own local folder or .gguf file — paste the path and click 'Use this model'.</span>",
                 "<b style='color:#ffffff !important;'>Edit Subtitles</b>: <span style='color:#f1f5f9 !important;'>Click any row in the table to jump to that moment in the video. Double-click any cell to correct words.</span>",
                 "<b style='color:#ffffff !important;'>Clean Fillers & Oral Tics</b>: <span style='color:#f1f5f9 !important;'>One-click AI cleanup to remove hesitations ('um', 'uh', 'euh', stuttering).</span>"
             ],
@@ -4439,6 +4448,17 @@ with gr.Blocks(title="ZastTranslate") as app:
                             interactive=True,
                             info="Select the local AI brain used for subtitle translation, SEO articles, and Shorts moments."
                         )
+                    with gr.Row(visible=(current_llm_backend == CUSTOM_BACKEND_NAME)) as custom_llm_row:
+                        custom_llm_path = gr.Textbox(
+                            label="📁 Manual local model (folder or .gguf file)",
+                            value=get_custom_model_path(),
+                            placeholder=r"E.g. D:\Models\MyLLM  or  D:\Models\my-model-Q4_K_M.gguf",
+                            interactive=True,
+                            scale=3,
+                            info="Local folder = HF model (config.json). Local file = GGUF only. Nothing is downloaded — the path must already exist on this PC."
+                        )
+                        btn_custom_llm_use = gr.Button("✅ Use this model", variant="secondary", scale=1)
+                    custom_llm_status = gr.Textbox(label="Manual model status", interactive=False, visible=(current_llm_backend == CUSTOM_BACKEND_NAME), value=("" if is_custom_path_valid() else "⚠️ No manual model set — paste a local folder or .gguf path, then click 'Use this model'."))
                     with gr.Accordion("💡 Guide: Choosing the Right LLM Model for Your GPU (VRAM & Performance Impact)", open=False):
                         gr.Markdown(
                             "> **Which model should you choose for your PC?**\n"
@@ -5617,7 +5637,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     
     def on_llm_backend_change(selected_backend):
         global reformulator, current_llm_backend
-        if selected_backend in available_llm_backends:
+        if selected_backend in available_llm_backends or selected_backend == CUSTOM_BACKEND_NAME:
             current_llm_backend = selected_backend
             user_config["llm_backend"] = selected_backend
             save_config(user_config)
@@ -5630,8 +5650,42 @@ with gr.Blocks(title="ZastTranslate") as app:
             warn_msg = check_vram_warning(selected_backend)
             if warn_msg:
                 gr.Warning(warn_msg)
+            is_custom = (selected_backend == CUSTOM_BACKEND_NAME)
+            if is_custom and not is_custom_path_valid():
+                gr.Warning("Custom model selected — paste a local folder or .gguf path and click 'Use this model'.")
+            return {custom_llm_row: gr.update(visible=is_custom), custom_llm_status: gr.update(visible=is_custom)}
+        return {custom_llm_row: gr.update(), custom_llm_status: gr.update()}
 
-    llm_backend_dropdown.change(on_llm_backend_change, inputs=[llm_backend_dropdown], outputs=[])
+    llm_backend_dropdown.change(on_llm_backend_change, inputs=[llm_backend_dropdown], outputs=[custom_llm_row, custom_llm_status])
+
+    def on_custom_llm_use(path_value):
+        global reformulator, current_llm_backend, available_llm_backends
+        try:
+            cleaned = set_custom_model_path(path_value or "")
+        except Exception as e:
+            gr.Warning(str(e))
+            return f"❌ {e}"
+        reset_custom_backend_cache()
+        # Refresh the Custom entry so the dropdown holds the real backend
+        try:
+            available_llm_backends = get_available_llm_backends()
+        except Exception:
+            pass
+        if reformulator.llm is not None:
+            try:
+                reformulator.llm.unload()
+            except Exception:
+                pass
+            reformulator.llm = None
+        reformulator.backend_name = CUSTOM_BACKEND_NAME
+        current_llm_backend = CUSTOM_BACKEND_NAME
+        user_config["llm_backend"] = CUSTOM_BACKEND_NAME
+        save_config(user_config)
+        kind = "folder (PyTorch/HF)" if os.path.isdir(cleaned) else "GGUF file (C++/llama-cpp)"
+        print(f"[Custom LLM] Manual model set: {cleaned} [{kind}]")
+        return f"✅ Manual model ready: {cleaned} [{kind}] — translation/SEO will use it."
+
+    btn_custom_llm_use.click(on_custom_llm_use, inputs=[custom_llm_path], outputs=[custom_llm_status])
 
     def on_tts_backend_change(selected_backend):
         global tts_engine, current_tts_backend

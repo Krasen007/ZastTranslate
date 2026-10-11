@@ -1,8 +1,15 @@
 import os
-from .hybrid import AcceleratedLLMBackend
+from .hybrid import (
+    AcceleratedLLMBackend,
+    CUSTOM_BACKEND_NAME,
+    build_custom_backend,
+    get_custom_model_path,
+    is_custom_path_valid,
+)
 
 # Global cache for the active backend
 _active_llm_backend = None
+_custom_llm_backend = None
 
 def get_available_backends() -> dict:
     """Returns a clean list of available LLM backends with transparent C++ acceleration and VRAM guidance."""
@@ -44,8 +51,42 @@ def get_available_backends() -> dict:
     for name, backend in backends.items():
         if backend.is_available():
             available[name] = backend
+
+    # Manual local model: always listed so users can pick a folder/.gguf file.
+    # It is selectable even before a valid path is set; get_backend() raises a
+    # clear message in that case.
+    global _custom_llm_backend
+    try:
+        custom_path = get_custom_model_path()
+        if custom_path and is_custom_path_valid(custom_path):
+            _custom_llm_backend = build_custom_backend(custom_path)
+            if _custom_llm_backend.is_available():
+                available[CUSTOM_BACKEND_NAME] = _custom_llm_backend
+            else:
+                # Engine missing (e.g. .gguf without llama-cpp): still list it so
+                # the user sees the option; loading will explain what to install.
+                available[CUSTOM_BACKEND_NAME] = _custom_llm_backend
+        else:
+            # No valid path yet — list a lightweight placeholder entry.
+            # It is replaced by the real backend once a path is saved.
+            if CUSTOM_BACKEND_NAME not in available:
+                placeholder = AcceleratedLLMBackend(
+                    name=CUSTOM_BACKEND_NAME,
+                    model_id=custom_path or "custom-manual-model",
+                    gguf_repo=None,
+                    gguf_file=None,
+                    capabilities={"languages": "all", "vram_gb": 6.0},
+                )
+                available[CUSTOM_BACKEND_NAME] = placeholder
+    except Exception as e:
+        print(f"[Custom LLM] note: {e}")
             
     return available
+
+def reset_custom_backend_cache():
+    """Forget the cached custom backend so a newly saved path takes effect."""
+    global _custom_llm_backend
+    _custom_llm_backend = None
 
 def get_backend(name: str):
     """
@@ -54,7 +95,29 @@ def get_backend(name: str):
     If a different backend is currently loaded, it unloads it to free VRAM.
     """
     global _active_llm_backend
-    
+
+    # Manual custom model: build on demand from the persisted path.
+    if name == CUSTOM_BACKEND_NAME or (name or "").strip().lower().startswith("custom"):
+        custom_path = get_custom_model_path()
+        if not custom_path or not is_custom_path_valid(custom_path):
+            raise ValueError(
+                "Custom model selected but no valid local path is set.\n"
+                "Paste a local model folder (HF format with config.json) or a .gguf file "
+                "in the 'Manual local model' field, click 'Use this model', then retry."
+            )
+        requested_backend = build_custom_backend(custom_path)
+        if _active_llm_backend is not None and getattr(_active_llm_backend, "name", "") != requested_backend.name:
+            print(f"Switching LLM Backend: Unloading {_active_llm_backend.name} to free VRAM...")
+            try:
+                _active_llm_backend.unload()
+            except Exception:
+                pass
+        _active_llm_backend = requested_backend
+        models_dir = os.path.expanduser("~/.zasttranslate/models")
+        os.environ["HF_HOME"] = models_dir
+        os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(models_dir, "hub")
+        return _active_llm_backend
+
     available = get_available_backends()
     
     # 1. Exact match

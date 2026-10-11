@@ -51,15 +51,28 @@ class LlamaCppBackend(LLMBackend):
         
         # Calculate GPU layers: -1 for all layers on GPU if CUDA
         n_gpu = -1 if DEVICE == "cuda" else 0
-        
-        self.model = llama_cpp.Llama.from_pretrained(
-            repo_id=self.repo_id,
-            filename=self.filename,
-            local_dir=models_dir,
-            n_gpu_layers=n_gpu,
-            n_ctx=4096,
-            verbose=False,
-        )
+
+        # Manual-model support: if filename is an absolute local .gguf file,
+        # load it directly instead of downloading from the Hub.
+        # (repo_id may be None/empty in that case.)
+        local_gguf = (self.filename or "") if isinstance(self.filename, str) else ""
+        if local_gguf and os.path.isfile(local_gguf) and local_gguf.lower().endswith(".gguf"):
+            print(f"LlamaCpp: Loading local GGUF file: {local_gguf}")
+            self.model = llama_cpp.Llama(
+                model_path=local_gguf,
+                n_gpu_layers=n_gpu,
+                n_ctx=4096,
+                verbose=False,
+            )
+        else:
+            self.model = llama_cpp.Llama.from_pretrained(
+                repo_id=self.repo_id,
+                filename=self.filename,
+                local_dir=models_dir,
+                n_gpu_layers=n_gpu,
+                n_ctx=4096,
+                verbose=False,
+            )
         
         # Enable Prompt Caching (KV Cache) in RAM
         # 512 MB cache stores prompt prefixes (system prompts, instructions)
