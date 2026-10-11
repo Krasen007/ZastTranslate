@@ -55,6 +55,25 @@ module.exports = {
                 message: "uv pip install \"voxcpm>=2.0.2\""
             }
         },
+        // 3.1 Install the BgTTS-38M-V2 local Bulgarian cloning backend.
+        // MioCodec declares requires-python>=3.12 but its source is 3.10-compatible
+        // (no PEP 695 generics / 3.12-only stdlib). Install it without dependency
+        // resolution or the version guard; its runtime deps come from requirements.txt.
+        // Non-fatal: if it fails, BgTTS-38M is simply hidden from the engine list.
+        {
+            method: "shell.run",
+            params: {
+                venv: "env",
+                path: ".",
+                env: {
+                    "UV_NATIVE_TLS": "true",
+                    "UV_SYSTEM_CERTS": "true",
+                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
+                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
+                },
+                message: "uv pip install --no-deps --ignore-requires-python \"git+https://github.com/Aratako/MioCodec\" || echo \"BgTTS-38M backend unavailable - Bulgarian cloning falls back to Edge-TTS BG\""
+            }
+        },
         // 4. Install llama-cpp-python for high-speed C++ GGUF inference & KV Cache
         {
             when: "{{platform === 'win32'}}",
@@ -118,6 +137,7 @@ module.exports = {
                     "python check_env.py",
                     "python -c \"import torch; print('torch', torch.__version__, 'CUDA' if torch.cuda.is_available() else 'CPU')\"",
                     "python -c \"import voxcpm; print('VoxCPM 2 OK')\"",
+                    "python -c \"import miocodec; print('MioCodec OK (BgTTS-38M cloning)')\"",
                     "python -c \"import bitsandbytes; print('bitsandbytes', bitsandbytes.__version__, 'OK')\"",
                     "python -c \"import llama_cpp; print('llama_cpp', llama_cpp.__version__, 'OK')\""
                 ]

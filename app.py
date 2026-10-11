@@ -370,52 +370,79 @@ def check_vram_warning(selected_backend: str) -> str:
     return ""
 
 
-# --- Bulgarian / cloning capability helpers -----------------------------------
+# --- Voice-cloning capability helpers -----------------------------------------
 
-# Language display names that need a non-cloning engine (Edge-TTS BG) to be dubbed,
-# because VoxCPM 2 / Qwen3-TTS ship no native voice for them.
-_CLONE_UNAVAILABLE_LANGS = {"Bulgarian"}
-
-_BG_NO_CLONE_TOOLTIP = (
-    "🚫 Voice cloning is unavailable for Bulgarian: VoxCPM 2 has no Bulgarian voice. "
-    "The **Edge-TTS BG** engine (Tab 1) provides native bg-BG voices "
-    "(bg-BG-BorislavNeural / bg-BG-KalinaNeural) but is cloud-only and cannot clone. "
-    "Select **Default voice** to dub with those native voices."
+# Tooltip shown when the selected engine cannot clone the target language.
+_NO_CLONE_TOOLTIP = (
+    "🚫 Voice cloning is unavailable for the selected engine and/or target language. "
+    "Select **Default voice** to dub with the engine's built-in voices, or switch to a "
+    "cloning engine in Tab 1 (VoxCPM 2 or BgTTS-38M)."
 )
 
 
-def _is_bulgarian_target(target_lang) -> bool:
-    """True when the selected target language is Bulgarian."""
-    return str(target_lang or "").strip().lower() in {l.lower() for l in _CLONE_UNAVAILABLE_LANGS}
+def _target_lang_iso(target_lang) -> str:
+    """Normalize a display name ('Bulgarian'), NLLB code ('bul_Cyrl') or ISO ('bg') to lowercase ISO."""
+    if not target_lang:
+        return ""
+    raw = str(target_lang).strip()
+    nllb = LANGUAGES.get(raw, raw)
+    iso = _get_iso_code(nllb)
+    if not iso or iso.upper() == "XX":
+        return raw.lower()[:2] if len(raw) >= 2 else ""
+    return iso.lower()
+
+
+def _caps_can_clone(caps: dict, target_lang) -> bool:
+    """Decide whether a backend's capabilities allow cloning a given target language.
+
+    Operates on a capabilities dict taken from an already-available backend object,
+    so it never triggers the unload side effect of ``get_tts_backend``.
+
+    Fails OPEN when the target is unknown/blank: ``state.video_info`` may not carry a
+    resolved ``target_language_name`` yet, and the legacy behaviour allowed cloning then.
+    """
+    if not caps or not caps.get("voice_design", False):
+        return False
+
+    iso = _target_lang_iso(target_lang)
+    if not iso:
+        return True  # unknown target -> don't over-restrict
+
+    excluded = {str(c).lower() for c in (caps.get("excluded_languages") or [])}
+    if iso in excluded:
+        return False
+
+    langs = caps.get("languages", [])
+    if langs != "all" and iso not in {str(l).lower() for l in langs}:
+        return False
+
+    return True
 
 
 def get_voice_mode_choices(tts_backend_name: str, target_lang: str = None):
     """
     Return (choices, default_value, info) for the Voice Mode radio.
 
-    Cloning options are removed when either:
-      * the selected TTS engine does not support voice design (e.g. Edge-TTS BG), or
-      * the target language is Bulgarian (no local engine can clone it).
+    Cloning options are removed when the selected engine cannot clone the target
+    language (``voice_design`` False, language unsupported, or explicitly excluded).
     """
-    supports_clone = True
     try:
-        engine = get_tts_backend(tts_backend_name)
-        supports_clone = bool(engine.capabilities.get("voice_design", False))
+        caps = get_tts_backend(tts_backend_name).capabilities
     except Exception:
-        supports_clone = True
+        caps = {"voice_design": True}
 
     info = "'Clone from original' isolates vocals. 'Clone from file' requires a clean 10-30s speech sample."
 
-    if _is_bulgarian_target(target_lang):
-        return [VOICE_MODE_DEFAULT], VOICE_MODE_DEFAULT, _BG_NO_CLONE_TOOLTIP
-
-    if not supports_clone:
+    if not caps.get("voice_design", False):
         engine_info = (
-            f"🚫 '{tts_backend_name}' is a cloud engine with no voice cloning. "
-            f"Select 'Default voice' to use its native neural voices, "
-            f"or switch to VoxCPM 2 in Tab 1 to clone a voice."
+            f"🚫 '{tts_backend_name}' has no voice cloning. "
+            f"Select 'Default voice' to use its built-in voices, or switch to a "
+            f"cloning engine in Tab 1 (VoxCPM 2 or BgTTS-38M)."
         )
         return [VOICE_MODE_DEFAULT], VOICE_MODE_DEFAULT, engine_info
+
+    if not _caps_can_clone(caps, target_lang):
+        return [VOICE_MODE_DEFAULT], VOICE_MODE_DEFAULT, _NO_CLONE_TOOLTIP
 
     return [VOICE_MODE_DEFAULT, VOICE_MODE_CLONE_ORIGINAL, VOICE_MODE_CLONE_FILE], VOICE_MODE_DEFAULT, info
 
@@ -1071,10 +1098,25 @@ def step3_save_transcription(data):
     # function runs (payload.headers on None). The startup patch maps None -> []
     # so this handler always runs; a fully empty table still falls back to
     # state.segments (populated by step2_transcribe / SRT import) instead of failing.
-    if (data is None or data == []) and state.segments:
-        rows = [[s.get("start", 0), s.get("end", 0), s.get("text", "")] for s in state.segments]
+    if data is None:
+        rows = []
+    elif hasattr(data, "empty") and data.empty:
+        rows = []
+    elif isinstance(data, list) and len(data) == 0:
+        rows = []
     else:
-        rows = _dataframe_to_rows(data)
+        try:
+            # avoid pandas ValueError when comparing DataFrame to []
+            if isinstance(data, list) and data == []:
+                rows = []
+            elif hasattr(data, "empty") and data.empty:
+                rows = []
+            else:
+                rows = _dataframe_to_rows(data)
+        except Exception:
+            rows = _dataframe_to_rows(data)
+    if len(rows) == 0 and state.segments:
+        rows = [[s.get("start", 0), s.get("end", 0), s.get("text", "")] for s in state.segments]
     new_segments = []
     for row in rows:
         try:
@@ -1463,15 +1505,14 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
 
         # Determine voice path based on mode
         voice_path = None
-        # Guard: languages with no clonable voice (e.g. Bulgarian) always fall back to
-        # the native neural voice, even if a stale clone radio value was submitted.
+        # Guard: even if a stale clone radio value was submitted, fall back to the
+        # engine's built-in voice when it cannot clone the selected target language.
         clone_requested = is_clone_requested(voice_mode)
         target_lang_name = state.video_info.get('target_language_name') if state.video_info else None
-        if clone_requested and _is_bulgarian_target(target_lang_name):
-            print("[INFO] Bulgarian target: cloning disabled, using native bg-BG neural voice.")
-            clone_requested = False
-        if clone_requested and not tts_engine.capabilities.get("voice_design", False):
-            print(f"[INFO] '{tts_engine.name}' has no voice cloning; using its native neural voice.")
+        _gate_target = target_lang_name or (state.video_info.get('target_language') if state.video_info else None)
+        if clone_requested and not _caps_can_clone(tts_engine.capabilities, _gate_target):
+            print(f"[INFO] '{tts_engine.name}': cloning unavailable for target '{_gate_target}' "
+                  f"— using the engine's built-in voice.")
             clone_requested = False
 
         if clone_requested and voice_mode == "Clone from original" and state.video_info and 'vocals' in state.video_info:
@@ -1672,10 +1713,9 @@ def step6_regenerate_segment(
 
     voice_path = None
     _regen_clone = is_clone_requested(voice_mode)
-    _regen_target = state.video_info.get('target_language_name') if state.video_info else None
-    if _regen_clone and (_is_bulgarian_target(_regen_target)
-                         or not tts_engine.capabilities.get("voice_design", False)):
-        print("[REGEN] Cloning unavailable for this engine/language — using native neural voice.")
+    _regen_target = (state.video_info.get('target_language_name') or state.video_info.get('target_language')) if state.video_info else None
+    if _regen_clone and not _caps_can_clone(tts_engine.capabilities, _regen_target):
+        print("[REGEN] Cloning unavailable for this engine/language — using the engine's built-in voice.")
         _regen_clone = False
 
     if _regen_clone and voice_mode == "Clone from original" and state.video_info:
@@ -1966,13 +2006,16 @@ def step5_bulk_run(target_langs, voice_mode, voice_file, never_cut, output_type,
     # Determine voice path ONCE before loading model
     initial_voice_path = None
     bulk_clone = is_clone_requested(voice_mode)
-    engine_can_clone = tts_engine.capabilities.get("voice_design", False)
-    if bulk_clone and not engine_can_clone:
-        print(f"[BULK] '{tts_engine.name}' has no voice cloning — using native neural voices.")
+    if bulk_clone and not tts_engine.capabilities.get("voice_design", False):
+        print(f"[BULK] '{tts_engine.name}' has no voice cloning — using its built-in voices.")
         bulk_clone = False
-    if bulk_clone and any(_is_bulgarian_target(tl) for tl in target_langs):
-        print("[BULK] Bulgarian is among the targets: cloning disabled, using native bg-BG voices.")
-        bulk_clone = False
+    if bulk_clone:
+        uncloneable = [tl for tl in target_langs
+                       if not _caps_can_clone(tts_engine.capabilities, tl)]
+        if uncloneable:
+            print(f"[BULK] Target(s) without cloning support {uncloneable}: "
+                  f"cloning disabled, using built-in voices.")
+            bulk_clone = False
 
     if bulk_clone and voice_mode == "Clone from original" and state.video_info and 'vocals' in state.video_info:
         if 'ref_audio_extracted' in state.video_info and os.path.exists(state.video_info['ref_audio_extracted']):
@@ -4238,7 +4281,7 @@ def _get_tab_guide_html(tab_num: int) -> str:
         4: {
             "goal": "Synthesize translated speech, duck original vocals/background music, and render the final 1080p dubbed MP4 video with direct 1-click video and audio downloads.",
             "options": [
-                "<b style='color:#ffffff !important;'>Voice Mode</b>: <span style='color:#f1f5f9 !important;'><code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Default voice</code> (Studio AI / native neural voice - Male/Female). <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Clone from original</code> (Clones the speaker's vocal timbre from the video!). <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Clone from file</code> (Upload a 10-30s clean sample). <i style='color:#cbd5e1 !important;'>Cloning is hidden for Bulgarian and for the Edge-TTS BG engine, which only offers native bg-BG voices.</i></span>",
+                "<b style='color:#ffffff !important;'>Voice Mode</b>: <span style='color:#f1f5f9 !important;'><code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Default voice</code> (Studio AI / native neural voice - Male/Female). <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Clone from original</code> (Clones the speaker's vocal timbre from the video!). <code style='color:#a5b4fc !important; background:rgba(255,255,255,0.15); padding:1px 5px; border-radius:4px;'>Clone from file</code> (Upload a 10-30s clean sample). <i style='color:#cbd5e1 !important;'>Cloning is hidden automatically when the selected engine cannot clone the target language (e.g. Edge-TTS BG). Bulgarian cloning is available with the BgTTS-38M engine (Tab 1); VoxCPM 2 has no Bulgarian voice.</i></span>",
                 "<b style='color:#ffffff !important;'>Never Cut Vocal</b>: <span style='color:#f1f5f9 !important;'>Guarantees complete sentence delivery without rushing words (may slightly overflow video cuts).</span>",
                 "<b style='color:#ffffff !important;'>Segment Fine-Tuning</b>: <span style='color:#f1f5f9 !important;'>Click any row to preview or re-generate individual sentences with custom timing.</span>",
                 "<b style='color:#ffffff !important;'>🎬 Download Dubbed Video (MP4)</b>: <span style='color:#f1f5f9 !important;'>Dedicated 1-click download button and file card for the rendered 1080p dubbed video.</span>",
@@ -4438,7 +4481,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                             )
 
                 with gr.Group(elem_classes=["zast-card"]):
-                    gr.Markdown(f"### ⚙️ 3. Neural Voice Synthesis Engine & Import {zast_tooltip('VoxCPM 2 provides zero-shot voice cloning across 30 languages. Edge-TTS BG adds native Bulgarian voices (bg-BG) over the network with 0 VRAM, but without cloning.')} <span class='zast-pill zast-pill-success'>VoxCPM 2 + Edge-TTS BG</span>")
+                    gr.Markdown(f"### ⚙️ 3. Neural Voice Synthesis Engine & Import {zast_tooltip('VoxCPM 2 provides zero-shot voice cloning across 30 languages. BgTTS-38M adds local, cloning-capable Bulgarian + English (~1.5 GB VRAM). Edge-TTS BG adds native Bulgarian voices (bg-BG) over the network with 0 VRAM, but without cloning.')} <span class='zast-pill zast-pill-success'>VoxCPM 2 + BgTTS-38M + Edge-TTS BG</span>")
                     with gr.Row():
                         tts_backend_dropdown = gr.Dropdown(
                             choices=list(available_tts_backends.keys()),
@@ -4446,7 +4489,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                             label="🎙️ TTS Voice Synthesis Engine",
                             interactive=True,
                             scale=2,
-                            info="Neural voice backend used for dubbing. VoxCPM 2 = local, ~8 GB VRAM, voice cloning. Edge-TTS BG = cloud Bulgarian, 0 VRAM, no cloning (needs internet)."
+                            info="Neural voice backend used for dubbing. VoxCPM 2 = local, ~8 GB VRAM, voice cloning (30 langs). BgTTS-38M = local, ~1.5 GB VRAM, voice cloning, Bulgarian + English. Edge-TTS BG = cloud Bulgarian, 0 VRAM, no cloning (needs internet)."
                         )
                         btn_dl = gr.Button("📥 Import Video or Audio", variant="primary", scale=2, elem_id="btn_import_video")
                         btn_reset = gr.Button("🔄 New Project", variant="secondary", scale=1)
@@ -5394,7 +5437,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                         "- **Export Translation SRT** — Full natural translation as subtitles\n"
                         "- **Export Fitted SRT** — Concise dubbing-ready subtitles\n\n"
                         "**Supported languages:** The dropdown dynamically updates based on the intersection of the selected **TTS Backend** and **LLM Backend**.\n"
-                        "- **VoxCPM 2** supports 30 languages (Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, Vietnamese). **Edge-TTS BG** adds **Bulgarian** (bg-BG-BorislavNeural / KalinaNeural) over the network with 0 VRAM.\n"
+                        "- **VoxCPM 2** supports 30 languages (Arabic, Burmese, Chinese, Danish, Dutch, English, Finnish, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Khmer, Korean, Lao, Malay, Norwegian, Polish, Portuguese, Russian, Spanish, Swahili, Swedish, Tagalog, Thai, Turkish, Vietnamese). **BgTTS-38M** adds local, cloning-capable **Bulgarian + English** (~1.5 GB VRAM). **Edge-TTS BG** adds **Bulgarian** (bg-BG-BorislavNeural / KalinaNeural) over the network with 0 VRAM.\n"
                         "- **Qwen2.5/3.5 LLM** support all languages. **EuroLLM** supports 24 European languages (FR, EN, ES, DE, IT, PT, NL, PL, SV, CS, RO, HU, BG, EL, FI, DA, NO, UK, SL, SK, HR, LT, LV, ET).\n\n"
                         "The available target languages are always the intersection of the TTS engine + LLM capabilities.\n\n"
                         "**Fitted text length** is controlled by the CPS (chars/sec) calibration. "
@@ -5417,8 +5460,8 @@ with gr.Blocks(title="ZastTranslate") as app:
                         "| **Default voice** | TTS preset / native neural voice | Quick dubbing, no reference needed |\n"
                         "| **Clone from original** | Clones the speaker's voice from the extracted vocals | Best result — sounds like the original speaker |\n"
                         "| **Clone from file** | Uses an uploaded WAV/MP3 file as voice reference | When you want a specific voice |\n\n"
-                        "> 💡 Cloning options are hidden automatically when the TTS engine cannot clone (Edge-TTS BG) or when the target language has no clonable voice (**Bulgarian** — use `Default voice` with the native bg-BG voices).\n\n"
-                        "💡 Voice cloning uses **VoxCPM 2**, installed automatically during setup.\n\n"
+                        "> 💡 Cloning options are hidden automatically when the selected engine cannot clone the target language (e.g. Edge-TTS BG). For **Bulgarian** cloning, select the **BgTTS-38M** engine in Tab 1; with other engines use `Default voice` (native bg-BG voices).\n\n"
+                        "💡 Voice cloning uses **VoxCPM 2** (30 languages) or **BgTTS-38M** (Bulgarian + English), installed automatically during setup.\n\n"
                         "**Options:**\n"
                         "- **Voice sample file** — Only needed for *Clone from file* mode. Use 10-30s of clear speech (WAV or MP3).\n"
                         "- **🔊 Never Cut Vocal** — Speaks all text in full without truncation. Produces more natural speech "
@@ -5743,18 +5786,6 @@ with gr.Blocks(title="ZastTranslate") as app:
         return f"✅ Manual model ready: {cleaned} [{kind}] — translation/SEO will use it."
 
     btn_custom_llm_use.click(on_custom_llm_use, inputs=[custom_llm_path], outputs=[custom_llm_status])
-
-    def on_tts_backend_change(selected_backend):
-        global tts_engine, current_tts_backend
-        if selected_backend in available_tts_backends:
-            current_tts_backend = selected_backend
-            user_config["tts_backend"] = selected_backend
-            save_config(user_config)
-            tts_engine = get_tts_backend(selected_backend)
-            time_sync.tts_engine = tts_engine
-            print(f"[TTS] Switched active TTS backend to {selected_backend}")
-
-    tts_backend_dropdown.change(on_tts_backend_change, inputs=[tts_backend_dropdown], outputs=[])
 
     btn_transcribe.click(step2_transcribe, [lang_source, model_size], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full")
     btn_import_srt.click(step2b_import_srt, [srt_file_input, lang_source], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full", js=JS_SRT_WAIT)

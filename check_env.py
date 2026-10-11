@@ -143,6 +143,14 @@ try:
 except ImportError:
     print("[INFO] edge-tts not installed (optional) — Bulgarian dubbing unavailable")
 
+# 15. BgTTS-38M (optional — local Bulgarian + English zero-shot voice cloning)
+try:
+    import miocodec  # noqa: F401
+    import jsonargparse  # noqa: F401
+    print("[OK] BgTTS-38M deps (miocodec + jsonargparse) — local BG/EN voice cloning available")
+except ImportError as e:
+    print(f"[INFO] BgTTS-38M backend not installed (optional) — Bulgarian voice cloning unavailable ({e})")
+
 # Summary
 print("=" * 50)
 if errors:

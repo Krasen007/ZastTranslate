@@ -37,7 +37,7 @@ Watch the complete step-by-step walkthrough to see ZastTranslate in action, from
 - 📱 **Viral Shorts Studio**: Select from 1 to 5 viral moments, preview sequences in the player, customize burned subtitles, and render to vertical 9:16 (1080x1920) with stacked blur & TikTok karaoke dynamic captions.
 - 🌍 **Multi-Backend Translation**: Choose between Qwen2.5-7B, Qwen3.5-9B, or EuroLLM-9B
 - 🗣️ **Voice Synthesis**: Powered by **VoxCPM 2** — 30 languages, per-language CPS calibration, with a dynamic factory ready to accept future engines.
-- 🎙️ **Voice Cloning**: Zero-shot voice cloning from original audio or uploaded sample
+- 🎙️ **Voice Cloning**: Zero-shot voice cloning from original audio or uploaded sample (VoxCPM 2 or BgTTS-38M for Bulgarian)
 - 🔊 **Smart Dubbing**: Auto-adjusts text length & speech speed to match original timing
 - 🎵 **Audio Separation**: Demucs isolates vocals from background music/FX, then remixes with dubbed voice
 - 🚀 **Bulk Mode**: Translate, dub, generate localized metadata, and batch export 9:16 Shorts to multiple languages automatically in one single click
@@ -493,6 +493,8 @@ These messages appear in the terminal but **do not affect functionality** and ca
 - [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B) — LLM backend (text fitting & reformulation)
 - [EuroLLM-9B-Instruct](https://huggingface.co/utter-project/EuroLLM-9B-Instruct) — LLM backend (European languages)
 - [VoxCPM 2](https://huggingface.co/openbmb/VoxCPM2) (openbmb/VoxCPM2) — TTS & voice cloning (30 languages)
+- [BgTTS-38M-V2](https://huggingface.co/beleata74/BgTTS-38M-V2) — Local Bulgarian + English zero-shot voice cloning (MioCodec speaker embeddings)
+- [MioCodec](https://github.com/Aratako/MioCodec) — Neural audio codec for speaker embeddings
 - [Demucs](https://github.com/facebookresearch/demucs) — Audio source separation
 - [PySceneDetect](https://github.com/Breakthrough/PySceneDetect) (0.7.1) — Video scene cut detection & boundary snapping
 - [OpenCV](https://opencv.org/) — Computer vision & image processing

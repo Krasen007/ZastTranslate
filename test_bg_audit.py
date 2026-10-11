@@ -162,6 +162,52 @@ def test_voxcpm_does_not_offer_bulgarian():
           f"{len(langs)} other languages remain")
 
 
+def test_bgtts_registered():
+    from modules.tts_backends.factory import _factory
+
+    assert "BgTTS-38M" in _factory._backends, "BgTTS-38M not registered in the TTS factory"
+    backend = _factory._backends["BgTTS-38M"]
+    caps = backend.capabilities
+    assert caps["languages"] == ["bg", "en"], f"Unexpected BgTTS languages: {caps['languages']}"
+    assert caps["voice_design"] is True, "BgTTS-38M must advertise voice cloning"
+    assert caps["sample_rate"] == 24000, f"Unexpected BgTTS sample rate: {caps['sample_rate']}"
+    assert caps["fitted_cps"] == 8.0, f"Unexpected BgTTS fitted_cps: {caps['fitted_cps']}"
+    assert caps["speed_control"] is False
+    print("[OK] BgTTS-38M registered: languages=['bg','en'], cloning=True, 24kHz")
+
+
+def test_caps_can_clone_helper():
+    import app
+
+    all_caps = {"voice_design": True, "languages": "all", "excluded_languages": ["bg"]}
+    assert app._caps_can_clone(all_caps, "French") is True
+    assert app._caps_can_clone(all_caps, "Bulgarian") is False, "excluded_languages must block bg"
+    # Fail open on an unknown/blank target (state may not be resolved yet).
+    assert app._caps_can_clone(all_caps, None) is True
+
+    assert app._caps_can_clone({"voice_design": False}, "French") is False
+
+    bgtts_caps = {"voice_design": True, "languages": ["bg", "en"]}
+    assert app._caps_can_clone(bgtts_caps, "Bulgarian") is True
+    assert app._caps_can_clone(bgtts_caps, "French") is False
+
+    # Display name, NLLB code and ISO code all resolve to the same decision.
+    assert app._target_lang_iso("Bulgarian") == "bg"
+    assert app._target_lang_iso("bul_Cyrl") == "bg"
+    assert app._target_lang_iso("bg") == "bg"
+    print("[OK] _caps_can_clone: excluded/unsupported blocked, unknown fails open, bg resolves")
+
+
+def test_bgtts_enables_bulgarian_cloning():
+    import app
+
+    choices, value, _ = app.get_voice_mode_choices("BgTTS-38M", "Bulgarian")
+    assert app.VOICE_MODE_CLONE_ORIGINAL in choices, f"BgTTS-38M must allow BG cloning: {choices}"
+    assert app.VOICE_MODE_CLONE_FILE in choices
+    assert value == app.VOICE_MODE_DEFAULT
+    print("[OK] BgTTS-38M offers Bulgarian cloning (unlike VoxCPM 2 / Edge-TTS BG)")
+
+
 TESTS = [
     test_bg_in_languages,
     test_reformulator_language_name,
@@ -175,6 +221,9 @@ TESTS = [
     test_voice_mode_gating_for_bg,
     test_valid_languages_intersection,
     test_voxcpm_does_not_offer_bulgarian,
+    test_bgtts_registered,
+    test_caps_can_clone_helper,
+    test_bgtts_enables_bulgarian_cloning,
 ]
 
 if __name__ == "__main__":

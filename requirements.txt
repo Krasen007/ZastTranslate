@@ -35,6 +35,17 @@ opencv-python>=4.8.0
 # Bulgarian neural dubbing (Edge-TTS BG backend) — cloud, 0 VRAM, needs internet
 edge-tts>=6.1.12
 
+# BgTTS-38M-V2 local Bulgarian + English cloning backend (Tab 1).
+# MioCodec itself is a git dependency that declares requires-python>=3.12 while the
+# app env is 3.10; its source is 3.10-compatible, so install.js installs it separately
+# with `--ignore-requires-python --no-deps`. These are MioCodec's runtime deps.
+jsonargparse[signatures]>=4.27.0
+json5>=0.9.0
+ruamel.yaml>=0.18.0
+einops>=0.7.0
+julius>=0.2.7
+safetensors>=0.4.0
+
 # YouTube API Integration
 google-api-python-client>=2.0.0
 google-auth-httplib2>=0.1.0
