@@ -1,4 +1,23 @@
 import sys
+# Gradio 6's Dataframe.preprocess() crashes on a None payload
+# (payload.headers on None) BEFORE any Python handler runs, which kills
+# Validate/Continue/Translate clicks when a table is None. Treat None as [].
+try:
+    from gradio.components.dataframe import Dataframe as _GrDataframe
+    _orig_df_preprocess = _GrDataframe.preprocess
+    def _safe_df_preprocess(self, payload):
+        if payload is None:
+            if getattr(self, "type", "array") == "pandas":
+                import pandas as _pd
+                return _pd.DataFrame([])
+            if getattr(self, "type", None) == "numpy":
+                import numpy as _np
+                return _np.empty((0, 0))
+            return []
+        return _orig_df_preprocess(self, payload)
+    _GrDataframe.preprocess = _safe_df_preprocess
+except Exception as _e:
+    print(f"[Gradio patch] Dataframe None-guard not applied: {_e}")
 # Force UTF-8 encoding on Windows console to prevent charmap UnicodeEncodeErrors with Asian/Cyrillic/Arabic text
 try:
     if hasattr(sys.stdout, 'reconfigure'):
@@ -1048,7 +1067,14 @@ def _dataframe_to_rows(data):
         return []
 
 def step3_save_transcription(data):
-    rows = _dataframe_to_rows(data)
+    # NOTE: Gradio 6's Dataframe.preprocess crashes on a None payload BEFORE this
+    # function runs (payload.headers on None). The startup patch maps None -> []
+    # so this handler always runs; a fully empty table still falls back to
+    # state.segments (populated by step2_transcribe / SRT import) instead of failing.
+    if (data is None or data == []) and state.segments:
+        rows = [[s.get("start", 0), s.get("end", 0), s.get("text", "")] for s in state.segments]
+    else:
+        rows = _dataframe_to_rows(data)
     new_segments = []
     for row in rows:
         try:
@@ -1079,8 +1105,11 @@ def step3_save_transcription(data):
     return f"✅ Transcription validated ({len(new_segments)} segments). Subtitles saved to output/{os.path.basename(srt_path) if srt_path else ''}. Go to 'Translation' tab.", gr.update(interactive=True), gr.update(interactive=True), _get_segments_json_html(), srt_path
 
 def step4_translate(target_lang, original_title="", original_desc="", progress=gr.Progress()):
+    # Translate works straight from the last transcription — if the table was
+    # never validated, fall back to state.segments instead of hard-failing, so
+    # the button never looks dead after a good transcription.
     if not state.segments:
-        return "Error: No transcription available.", None, _get_empty_segments_html(), "", "", None, "None"
+        return "Error: No transcription available. Run Transcribe (Tab 2) or Validate first.", [], _get_empty_segments_html(), "", "", None, "None"
 
     # Clear old synced segment audio cache when running a new translation
     import glob
@@ -4488,7 +4517,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     _tab2_actions_tooltip = zast_tooltip("• Validate: Saves subtitles and unlocks Tab 3 (Translation).\n• Clean Fillers: Removes hesitation words (uh, um, like) with millisecond sync.\n• Export SRT: Refreshes the downloadable SRT file below.\n• Open Folder: Opens the output directory in Windows Explorer.")
                     gr.Markdown(f"**⚡ Quick Actions & Subtitle Export** {_tab2_actions_tooltip}")
                     with gr.Row():
-                        btn_valid_transcription = gr.Button("Validate Transcription ✅", variant="primary", elem_classes=["zast-btn-validate"])
+                        btn_valid_transcription = gr.Button("Validate Transcription ✅ (uses last transcription if table is empty)", variant="primary", elem_classes=["zast-btn-validate"])
                         btn_clean_transcription = gr.Button("🧹 Clean Fillers & Oral Tics", variant="secondary")
                         btn_export_transcription = gr.Button("💾 Export / Refresh SRT", variant="secondary")
                         btn_open_output_tab2 = gr.Button("📂 Open Output Folder", variant="secondary")
@@ -5665,6 +5694,34 @@ with gr.Blocks(title="ZastTranslate") as app:
         except Exception as e:
             gr.Warning(str(e))
             return f"❌ {e}"
+        # A .gguf (file OR snapshot folder) needs llama-cpp; fail fast HERE with
+        # a clear message instead of mid-translation in step4.
+        needs_cpp = False
+        if os.path.isfile(cleaned) and cleaned.lower().endswith(".gguf"):
+            needs_cpp = True
+        elif os.path.isdir(cleaned):
+            for _root, _dirs, _files in os.walk(cleaned):
+                if any(f.lower().endswith(".gguf") for f in _files):
+                    # Only a *bare* GGUF folder (no HF config) needs C++;
+                    # a real HF folder runs on the PyTorch engine.
+                    if not os.path.isfile(os.path.join(cleaned, "config.json")):
+                        needs_cpp = True
+                    break
+        if needs_cpp:
+            try:
+                import llama_cpp  # noqa: F401
+            except Exception:
+                import sys as _sys
+                msg = (
+                    "❌ GGUF needs llama-cpp-python, which is NOT installed "
+                    f"(Python {_sys.version.split()[0]}).\n"
+                    "Easiest fix: use a predefined model, or point Custom at a local "
+                    "HF folder (config.json + safetensors).\n"
+                    "Or install it: pip install llama-cpp-python (needs C++ build tools on 3.14), "
+                    "then restart the app."
+                )
+                gr.Warning(msg)
+                return msg
         reset_custom_backend_cache()
         # Refresh the Custom entry so the dropdown holds the real backend
         try:
@@ -6495,8 +6552,8 @@ with gr.Blocks(title="ZastTranslate") as app:
             return (
                 None, None,
                 gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False),
-                None, _get_empty_segments_html(),
-                None, None,
+                [], _get_empty_segments_html(),
+                [], [],
                 "", "", "", "",
                 "None", "", None
             )
@@ -6562,11 +6619,12 @@ with gr.Blocks(title="ZastTranslate") as app:
             # video_preview, audio_preview
             gr.update(visible=not is_audio, value=video_val if not is_audio else None),
             gr.update(visible=is_audio, value=video_val if is_audio else None),
-            # Interactive buttons
-            gr.update(interactive=has_video),  # btn_transcribe
-            gr.update(interactive=has_segments),  # btn_translate
+            # Interactive buttons — Translate unlocks as soon as transcription
+            # segments exist (Validate has already auto-saved them to state).
+            gr.update(interactive=True),  # btn_transcribe (video loaded here)
+            gr.update(interactive=True),  # btn_translate (segments exist here)
             gr.update(interactive=has_translated),  # btn_synth
-            gr.update(interactive=has_segments),  # btn_bulk_run
+            gr.update(interactive=True),  # btn_bulk_run (segments exist here)
             # transcription_df, segments_json_holder
             trans_update,
             _get_segments_json_html() if (has_segments or has_translated) else _get_empty_segments_html(),
@@ -6591,9 +6649,13 @@ with gr.Blocks(title="ZastTranslate") as app:
             has_translated = len(state.translated_segments) > 0 if state.translated_segments else False
             return (
                 gr.update(interactive=has_video),      # btn_transcribe
-                gr.update(interactive=has_segments),   # btn_translate
+                # Translate unlocks on EITHER validated segments OR a fresh
+                # transcription in state (Validate click may have been skipped).
+                # Without this, switching tabs re-greys the button even though
+                # step4_translate would succeed from state.segments.
+                gr.update(interactive=(has_segments or has_video)),   # btn_translate
                 gr.update(interactive=has_translated), # btn_synth
-                gr.update(interactive=has_segments)    # btn_bulk_run
+                gr.update(interactive=(has_segments or has_video))    # btn_bulk_run
             )
         except Exception:
             return gr.update(), gr.update(), gr.update(), gr.update()

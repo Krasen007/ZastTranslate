@@ -30,12 +30,21 @@ def set_custom_model_path(path: str) -> str:
         raise ValueError("Empty path — paste a local folder or .gguf file path.")
     cleaned = os.path.abspath(os.path.expanduser(cleaned))
     if os.path.isdir(cleaned):
-        # A local HF folder must at least contain a config (config.json or tokenizer files).
+        # A local HF folder normally holds config.json / tokenizer files.
+        # ALSO accept a bare folder that contains .gguf weights (e.g. an HF
+        # cache snapshot folder) — hybrid.load() routes it to the C++ engine.
         markers = ("config.json", "tokenizer.json", "tokenizer_config.json")
-        if not any(os.path.isfile(os.path.join(cleaned, m)) for m in markers):
+        has_marker = any(os.path.isfile(os.path.join(cleaned, m)) for m in markers)
+        has_gguf = False
+        if not has_marker:
+            for _root, _dirs, _files in os.walk(cleaned):
+                if any(f.lower().endswith(".gguf") for f in _files):
+                    has_gguf = True
+                    break
+        if not has_marker and not has_gguf:
             # Still accept it — transformers will raise a clear error on load if invalid —
             # but warn so the user knows what is expected.
-            print(f"[Custom LLM] Warning: folder has no HF config marker: {cleaned}")
+            print(f"[Custom LLM] Warning: folder has no HF config marker (*.json) and no .gguf weights: {cleaned}")
     elif os.path.isfile(cleaned):
         if not cleaned.lower().endswith(".gguf"):
             raise ValueError(
@@ -83,6 +92,22 @@ def build_custom_backend(path: str = None) -> "AcceleratedLLMBackend":
     cleaned = os.path.abspath(os.path.expanduser(cleaned))
     capabilities = {"languages": "all", "vram_gb": 6.0}
     if os.path.isdir(cleaned):
+        # Bare folder holding .gguf weights (e.g. HF cache snapshot folder):
+        # point straight at the largest .gguf so load() takes the C++ path.
+        gguf_hits = []
+        for _root, _dirs, _files in os.walk(cleaned):
+            for _f in _files:
+                if _f.lower().endswith(".gguf"):
+                    gguf_hits.append(os.path.join(_root, _f))
+        if gguf_hits and not os.path.isfile(os.path.join(cleaned, "config.json")):
+            gguf_hits.sort(key=lambda p: os.path.getsize(p), reverse=True)
+            return AcceleratedLLMBackend(
+                name=CUSTOM_BACKEND_NAME,
+                model_id=cleaned,
+                gguf_repo="local-file",
+                gguf_file=gguf_hits[0],
+                capabilities=capabilities,
+            )
         return AcceleratedLLMBackend(
             name=CUSTOM_BACKEND_NAME,
             model_id=cleaned,
@@ -141,6 +166,28 @@ class AcceleratedLLMBackend(LLMBackend):
         if self._backend is not None:
             return
 
+        # Manual custom model with no valid path saved (placeholder backend,
+        # e.g. right after install or after the path file was deleted): raise
+        # the actionable message HERE (load time) — never at get_backend time,
+        # which must stay safe for app startup.
+        if self._name == CUSTOM_BACKEND_NAME and (
+            not self.model_id
+            or self.model_id == "custom-manual-model"
+            or (
+                not (isinstance(self.gguf_file, str) and os.path.isfile(self.gguf_file))
+                and not (
+                    isinstance(self.model_id, str)
+                    and os.path.isdir(os.path.abspath(os.path.expanduser(self.model_id)))
+                )
+            )
+        ):
+            raise ValueError(
+                "Custom model selected but no valid local path is set.\n"
+                "In Tab 2, paste a local model folder (HF format with config.json) "
+                "or a .gguf file in the 'Manual local model' field, "
+                "click 'Use this model', then retry."
+            )
+
         # Manual local model fast-path: absolute .gguf file -> C++ engine directly.
         maybe_local_gguf = (self.gguf_file or "") if isinstance(self.gguf_file, str) else ""
         if maybe_local_gguf and os.path.isfile(maybe_local_gguf) and maybe_local_gguf.lower().endswith(".gguf"):
@@ -156,6 +203,30 @@ class AcceleratedLLMBackend(LLMBackend):
             self.active_engine = "cpp"
             print(f"[{self.name}] C++ Engine active and ready.")
             return
+
+        # Manual local model: a bare folder containing a *GGUF snapshot* (HF cache
+        # layout: <root>/snapshots/<hash>/*.gguf) with no config.json. Route it to
+        # the C++ engine automatically so users can paste the snapshot folder.
+        maybe_folder = os.path.abspath(os.path.expanduser(self.model_id)) if isinstance(self.model_id, str) else ""
+        if maybe_folder and os.path.isdir(maybe_folder) and not self.gguf_repo:
+            gguf_hits = []
+            for _root, _dirs, _files in os.walk(maybe_folder):
+                for _f in _files:
+                    if _f.lower().endswith(".gguf"):
+                        gguf_hits.append(os.path.join(_root, _f))
+                        break
+                if gguf_hits:
+                    break
+            if gguf_hits:
+                # Prefer the largest file (main weights over MTP/projection shards).
+                gguf_hits.sort(key=lambda p: os.path.getsize(p), reverse=True)
+                print(f"[{self.name}] Folder holds GGUF weights, routing to C++ engine: {gguf_hits[0]}")
+                cpp_backend = LlamaCppBackend(self.name, "local-file", gguf_hits[0], self._capabilities)
+                cpp_backend.load()  # raises a clear install message if llama-cpp is missing
+                self._backend = cpp_backend
+                self.active_engine = "cpp"
+                print(f"[{self.name}] C++ Engine active and ready.")
+                return
 
         # Manual local model fast-path: absolute local HF folder -> PyTorch engine directly
         # (avoids the Hub-cache lookup below, which would mis-handle absolute paths).

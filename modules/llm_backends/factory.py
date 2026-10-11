@@ -97,13 +97,19 @@ def get_backend(name: str):
     global _active_llm_backend
 
     # Manual custom model: build on demand from the persisted path.
+    # NOTE: must NEVER raise here — app.py calls get_backend() at startup to
+    # compute INITIAL_VALID_LANGS. If no valid path is saved yet, return a
+    # lightweight placeholder (languages="all") so the app boots; the real
+    # error is raised later at .load() time (or by on_custom_llm_use).
     if name == CUSTOM_BACKEND_NAME or (name or "").strip().lower().startswith("custom"):
         custom_path = get_custom_model_path()
         if not custom_path or not is_custom_path_valid(custom_path):
-            raise ValueError(
-                "Custom model selected but no valid local path is set.\n"
-                "Paste a local model folder (HF format with config.json) or a .gguf file "
-                "in the 'Manual local model' field, click 'Use this model', then retry."
+            return AcceleratedLLMBackend(
+                name=CUSTOM_BACKEND_NAME,
+                model_id="custom-manual-model",
+                gguf_repo=None,
+                gguf_file=None,
+                capabilities={"languages": "all", "vram_gb": 6.0},
             )
         requested_backend = build_custom_backend(custom_path)
         if _active_llm_backend is not None and getattr(_active_llm_backend, "name", "") != requested_backend.name:

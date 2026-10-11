@@ -42,8 +42,28 @@ class LlamaCppBackend(LLMBackend):
     def load(self):
         if self.model is not None:
             return
+
+        # llama-cpp is REQUIRED for any GGUF path. Fail fast with an actionable
+        # message (esp. on Python 3.14, where the cu124 wheel is cp310-only and
+        # `uv pip install llama-cpp-python` must build from source instead).
+        try:
+            import llama_cpp  # noqa: F401
+        except Exception:
+            import sys as _sys
+            raise RuntimeError(
+                "llama-cpp-python is not installed, so this GGUF model cannot be loaded.\n"
+                f"Detected Python {_sys.version.split()[0]}. "
+                "The prebuilt CUDA wheel in install.js is cp310-only (llama_cpp_python-0.3.4-cp310-...-win_amd64.whl) "
+                "and does NOT install on Python 3.14 — that is why your .gguf fails while predefined models work "
+                "(they fall back to the PyTorch engine).\n"
+                "Fix (pick one):\n"
+                "  A) Easiest — skip GGUF: pick a predefined model, or point the manual Custom field at a local "
+                "HF/transformers folder (config.json + safetensors) instead of a .gguf file.\n"
+                "  B) Install llama-cpp on Python 3.14 (needs a C++ build env + CMake, slow): "
+                "pip install llama-cpp-python  (then restart the app).\n"
+                "  C) Use Python 3.10 for the app, then install the prebuilt CUDA wheel from install.js."
+            )
             
-        import llama_cpp
         print(f"Loading GGUF/C++ LLM ({self.name} - {self.repo_id}/{self.filename})...")
         
         models_dir = os.path.expanduser("~/.zasttranslate/models/gguf")
