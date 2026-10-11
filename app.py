@@ -559,6 +559,35 @@ def step1_download(url, local_file, resolution, custom_title="", progress=gr.Pro
             gr.update(visible=False)
         )
 
+def _free_dubbing_vram():
+    """
+    Free VRAM held by the translation/dubbing stack before running Whisper.
+    The LLM (Qwen2.5-7B NF4 ~4.5 GB), NLLB translator, and VoxCPM TTS (~2+ GB)
+    stay resident once loaded. On an 8 GB GPU, keeping them loaded alongside
+    Whisper large-v3 (~3 GB) + CUDA context causes
+    "RuntimeError: CUDA failed with error out of memory". Unload them here;
+    they reload lazily on next use.
+    """
+    import gc
+    import torch
+    for obj in (reformulator, translator):
+        try:
+            if hasattr(obj, "cleanup"):
+                obj.cleanup()
+        except Exception as e:
+            print(f"[VRAM] cleanup of {type(obj).__name__} failed: {e}")
+    try:
+        if tts_engine is not None and hasattr(tts_engine, "unload"):
+            tts_engine.unload()
+    except Exception as e:
+        print(f"[VRAM] TTS unload failed: {e}")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+    print("[VRAM] Freed translation/dubbing models for transcription.")
+
 def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
     if not state.video_info:
         return "Error: No video loaded.", None, _get_empty_segments_html(), None, "None"
@@ -570,6 +599,9 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
     if not state.keep_models:
         separator.cleanup()
     
+    # Free VRAM from any loaded translation/dubbing models so Whisper can fit.
+    _free_dubbing_vram()
+
     progress(0.4, "Transcribing with WhisperX...")
     # Map display names to WhisperX language codes
     source_lang_map = {
@@ -586,12 +618,20 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
     from modules.transcriber import DEFAULT_INITIAL_PROMPT
     custom_prompt = f"{video_title}. {DEFAULT_INITIAL_PROMPT}" if video_title else DEFAULT_INITIAL_PROMPT
 
-    res = transcriber.transcribe(
-        state.video_info['audio_16k'], 
-        language=lang_code,
-        enable_diarization=False,
-        initial_prompt=custom_prompt
-    )
+    try:
+        res = transcriber.transcribe(
+            state.video_info['audio_16k'],
+            language=lang_code,
+            enable_diarization=False,
+            initial_prompt=custom_prompt
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()  # lands in app_run_err.log / console for diagnosis
+        return (
+            f"❌ Transcription failed: {type(e).__name__}: {e}",
+            None, _get_empty_segments_html(), None, "None",
+        )
     state.segments = res['segments']
     state.video_info['detected_language'] = res['language']
     if not state.keep_models:
@@ -963,8 +1003,10 @@ def step2_apply_seo_metadata(seo_title, seo_desc):
 def _dataframe_to_rows(data):
     """Convert Gradio Dataframe output to list of lists, handling all formats."""
     import pandas as pd
+    if data is None:
+        return []
     if hasattr(data, 'data') and not isinstance(data, dict):
-        return data.data
+        return data.data or []
     elif isinstance(data, pd.DataFrame):
         return data.values.tolist()
     elif isinstance(data, dict) and 'data' in data:
@@ -4394,6 +4436,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     transcription_status = gr.Textbox(label="Status", interactive=False)
                     transcription_df = gr.Dataframe(
                         headers=["Start", "End", "Text"],
+                        value=[],
                         label="Interactive Subtitles (Click row to seek left player, double-click cell to edit text)",
                         interactive=True,
                         wrap=True,
@@ -4469,6 +4512,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     translation_status = gr.Textbox(label="Status", interactive=False)
                     translation_df = gr.Dataframe(
                         headers=["Start", "End", "Original", "Translation", "Fitted"],
+                        value=[],
                         label="Edit Translation",
                         interactive=True,
                         wrap=True,
@@ -4535,6 +4579,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     gr.Markdown(f"### 🎚️ 2. Dialogue Lines & Segment-Level Tuning {zast_tooltip('Click any dialogue row to seek the video player, adjust start/end times, or re-synthesize individual sentences.')} <span class='zast-pill zast-pill-info'>Fine-Tuning</span>")
                     dubbing_segments_df = gr.Dataframe(
                         headers=["Index", "Start", "End", "Text to Speak", "Status"],
+                        value=[],
                         label="Segments List (Click a row to edit text or timing)",
                         interactive=False,
                         wrap=True,

@@ -1,4 +1,18 @@
 import os
+
+# Reduce CUDA memory fragmentation on tight GPUs (e.g. 8 GB).
+# The PyTorch OOM message suggests PYTORCH_ALLOC_CONF=expandable_segments:True, but
+# that backend is NOT compiled into the Windows torch build (it emits "expandable_
+# segments not supported on this platform"). max_split_size_mb IS supported and
+# solves the same problem: it stops the caching allocator from splintering large
+# free blocks into tiny unusable ones, which otherwise shows up as
+# "reserved but unallocated" memory and makes the LLM loader's warmup allocation
+# fail with torch.OutOfMemoryError even though the NF4 model (~4.5 GB) fits in 8 GB.
+# Must be set before the first CUDA allocation. The legacy PYTORCH_CUDA_ALLOC_CONF
+# name is set too so older torch builds (torch.js pins 2.8) pick it up as well.
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "max_split_size_mb:128")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
+
 import torch
 
 # Nom du projet

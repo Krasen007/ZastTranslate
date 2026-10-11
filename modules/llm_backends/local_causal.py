@@ -32,7 +32,18 @@ class LocalCausalLMBackend(LLMBackend):
     def load(self):
         if self.model is not None:
             return
-            
+
+        # Reclaim any fragmented/leftover VRAM (e.g. from the transcription step)
+        # BEFORE loading. The OOM here is triggered by transformers' allocator
+        # warmup needing one large contiguous block; emptying the cache returns
+        # "reserved but unallocated" fragments to the driver so the block is
+        # available. Critical on 8 GB GPUs.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
+
         print(f"Loading Translation LLM ({self.name} - {self.model_id})...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         

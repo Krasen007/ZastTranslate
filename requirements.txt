@@ -2,6 +2,21 @@
 gradio>=4.0.0
 yt-dlp>=2024.0.0
 git+https://github.com/m-bain/whisperX.git
+# Pinned: whisperx 3.2.0's TranscriptionOptions defaults predate faster-whisper>=1.1's
+# required 'multilingual'/'hotwords' args; modules/transcriber.py shims them via asr_options.
+# Keep this pin until whisperx upstream includes the keys itself.
+faster-whisper==1.2.1
+# CUDA 12 runtime DLLs (cublas64_12.dll / cuDNN 9) for faster-whisper's ctranslate2
+# backend on GPU. torch cu130 ships CUDA 13 only (cublas64_13.dll) and no system CUDA
+# toolkit is present, so ctranslate2's lazy LoadLibrary fails with "cublas64_12.dll not
+# found". modules/transcriber.py exposes these packages' bin dirs via PATH at startup.
+# Harmless (unused) on torch cu128, which already bundles the DLLs.
+nvidia-cublas-cu12>=12.4.0
+nvidia-cudnn-cu12>=9.0.0
+nvidia-cuda-runtime-cu12>=12.4.0
+# Required by whisperx's VAD stack (pyannote.audio checkpoint unpickling needs it);
+# missing on fresh installs -> "ModuleNotFoundError: No module named 'omegaconf'".
+omegaconf>=2.3.0
 git+https://github.com/huggingface/transformers.git
 sentencepiece
 protobuf

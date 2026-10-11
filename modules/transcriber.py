@@ -1,8 +1,90 @@
+import os
+
+# --- Compat: expose CUDA 12 runtime DLLs to CTranslate2 (faster-whisper) ------
+# The ctranslate2 wheel is built against CUDA 12 and lazily LoadLibrary()s
+# cublas64_12.dll (+ cuDNN 9 companion DLLs) at the first GPU operation. torch
+# 2.10 ships CUDA 13 only (cublas64_13.dll in torch\lib) and no CUDA 12 toolkit
+# is installed, so the first model.encode() fails with
+# "RuntimeError: Library cublas64_12.dll is not found or cannot be loaded".
+# The pip packages nvidia-cublas-cu12 / nvidia-cudnn-cu12 provide those DLLs
+# under site-packages/nvidia/*/bin; LoadLibrary searches PATH, so expose the
+# dirs via PATH (and os.add_dll_directory) before whisperx touches the GPU.
+def _expose_cuda12_dll_dirs():
+    if os.name != "nt":
+        return
+    dll_dirs = []
+    try:
+        import site
+        for site_dir in list(site.getsitepackages()) + [site.getusersitepackages()]:
+            for sub in (
+                os.path.join("nvidia", "cublas", "bin"),
+                os.path.join("nvidia", "cudnn", "bin"),
+                os.path.join("nvidia", "cuda_runtime", "bin"),
+            ):
+                candidate = os.path.join(site_dir, sub)
+                if os.path.isdir(candidate) and candidate not in dll_dirs:
+                    dll_dirs.append(candidate)
+    except Exception:
+        pass
+    if not dll_dirs:
+        print(
+            "[transcriber] CUDA 12 DLL dirs not found. If GPU transcription fails with a "
+            "missing cublas64_12.dll error, run: pip install nvidia-cublas-cu12 nvidia-cudnn-cu12"
+        )
+        return
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    missing = [d for d in dll_dirs if d not in path_entries]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join(missing + path_entries)
+    if hasattr(os, "add_dll_directory"):
+        for d in dll_dirs:
+            try:
+                os.add_dll_directory(d)
+            except Exception:
+                pass
+
+_expose_cuda12_dll_dirs()
+# --- end compat ---------------------------------------------------------------
+
 import whisperx
 import torch
-import os
 from modules.utils import cleanup_model
 from config import DEVICE, GPU_VRAM
+
+# --- Compat: whisperx 3.2.x VAD vs pyannote.audio 4.x ------------------------
+# whisperx's VoiceActivitySegmentation.__init__ declares `use_auth_token` as an
+# explicit parameter (default None) and ALWAYS forwards it to pyannote's
+# VoiceActivityDetection.__init__. In pyannote.audio>=4 that kwarg no longer
+# exists: it falls through **inference_kwargs into Inference(...) ->
+# TypeError: Inference.__init__() got an unexpected keyword argument
+# 'use_auth_token'. Popping it from the caller's kwargs is NOT enough (whisperx
+# re-injects it via its own default), so the patched subclass bypasses
+# whisperx's __init__ and calls pyannote's directly, mapping the legacy kwarg
+# to pyannote 4.x's `token`.
+# No site-packages edits; applied once at import.
+try:
+    from whisperx import vad as _whisperx_vad
+    from pyannote.audio.pipelines.voice_activity_detection import (
+        VoiceActivityDetection as _PyannoteVAD,
+    )
+
+    _OrigVAS = _whisperx_vad.VoiceActivitySegmentation
+
+    class _PatchedVAS(_OrigVAS):
+        def __init__(self, *args, **kwargs):
+            # `use_auth_token` is whisperx's 3rd positional arg; strip it there too
+            if len(args) >= 3:
+                args = args[:2] + args[3:]
+            use_auth_token = kwargs.pop("use_auth_token", None)
+            # pyannote.audio>=4 renamed the HF auth kwarg to `token`
+            kwargs.setdefault("token", use_auth_token)
+            _PyannoteVAD.__init__(self, *args, **kwargs)
+
+    _whisperx_vad.VoiceActivitySegmentation = _PatchedVAS
+except Exception as _e:
+    print(f"[transcriber] VAD compat patch skipped: {_e}")
+# --- end compat ---------------------------------------------------------------
+
 
 MIN_CUE_WORDS = 3
 MIN_CUE_DURATION_MS = 400
@@ -225,6 +307,34 @@ class Transcriber:
         self.compute_type = compute_type if DEVICE == "cuda" else "int8"
         self.device = DEVICE
 
+    @staticmethod
+    def _compat_asr_options(model_size, language):
+        """Forward-compat shim for newer faster-whisper (>=1.1).
+
+        whisperx 3.2.0 builds TranscriptionOptions(**defaults) from a defaults
+        dict that predates faster-whisper's required 'multilingual'/'hotwords'
+        args, so load_model() crashes with
+        `TypeError: TranscriptionOptions.__init__() missing ...`.
+        whisperx merges our asr_options into those defaults first, so passing
+        the missing keys here fixes it without touching site-packages.
+        Keys are only added when the installed faster-whisper accepts them,
+        keeping backward compatibility with older versions.
+        """
+        extra = {}
+        try:
+            import inspect
+            import faster_whisper.transcribe as _fw_transcribe
+            params = inspect.signature(_fw_transcribe.TranscriptionOptions.__init__).parameters
+            if "multilingual" in params:
+                # Describes the model, not the request: our models are
+                # multilingual unless an english-only '.en' variant is used.
+                extra["multilingual"] = not str(model_size or "").endswith(".en")
+            if "hotwords" in params:
+                extra["hotwords"] = None
+        except Exception:
+            pass
+        return extra
+
     def transcribe(self, audio_path, language=None, enable_diarization=True, initial_prompt=None):
         """
         Transcribe audio with WhisperX.
@@ -236,6 +346,9 @@ class Transcriber:
             "initial_prompt": prompt,
             "condition_on_previous_text": False,
         }
+        # Shim for faster-whisper>=1.1 required TranscriptionOptions args
+        # (whisperx 3.2.0 defaults predate them). See _compat_asr_options.
+        asr_options.update(self._compat_asr_options(self.model_size, language))
         try:
             model = whisperx.load_model(
                 self.model_size, 
@@ -249,28 +362,35 @@ class Transcriber:
             raise
 
         print("Transcription in progress...")
-        audio = whisperx.load_audio(audio_path)
-        result = model.transcribe(audio, batch_size=16)
-        detected_lang = result.get("language", "unknown")
-        
-        # Alignment
-        print("Word-level alignment...")
-        model_a, metadata = whisperx.load_align_model(
-            language_code=result["language"], 
-            device=self.device
-        )
-        result = whisperx.align(
-            result["segments"], 
-            model_a, 
-            metadata, 
-            audio, 
-            self.device, 
-            return_char_alignments=False
-        )
-        
-        # Cleanup alignment models
-        cleanup_model(model_a)
-        cleanup_model(model)
+        model_a = None
+        try:
+            # All VRAM-heavy work runs inside this try so the models are always
+            # released below — otherwise an OOM (or any error) during generation
+            # / alignment leaks ~3 GB per attempt and compounds across retries.
+            audio = whisperx.load_audio(audio_path)
+            result = model.transcribe(audio, batch_size=16)
+            detected_lang = result.get("language", "unknown")
+
+            # Alignment
+            print("Word-level alignment...")
+            model_a, metadata = whisperx.load_align_model(
+                language_code=result["language"], 
+                device=self.device
+            )
+            result = whisperx.align(
+                result["segments"], 
+                model_a, 
+                metadata, 
+                audio, 
+                self.device, 
+                return_char_alignments=False
+            )
+        finally:
+            # Cleanup alignment + ASR models on BOTH success and error paths.
+            cleanup_model(model_a)
+            cleanup_model(model)
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
         
         # Re-enable TF32 — pyannote disables it for reproducibility,
         # but we need it for fast LLM/TTS inference on Ampere+ GPUs
