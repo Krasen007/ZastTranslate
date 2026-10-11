@@ -559,6 +559,18 @@ def step1_download(url, local_file, resolution, custom_title="", progress=gr.Pro
             gr.update(visible=False)
         )
 
+def _vram_status():
+    """Human-readable VRAM state for logs ('' when CUDA is unavailable)."""
+    import torch
+    if not torch.cuda.is_available():
+        return ""
+    free_b, total_b = torch.cuda.mem_get_info()
+    return (
+        f" | VRAM free {free_b / 1024 ** 3:.2f}/{total_b / 1024 ** 3:.2f} GB, "
+        f"allocated {torch.cuda.memory_allocated() / 1024 ** 3:.2f} GB, "
+        f"reserved {torch.cuda.memory_reserved() / 1024 ** 3:.2f} GB"
+    )
+
 def _free_dubbing_vram():
     """
     Free VRAM held by the translation/dubbing stack before running Whisper.
@@ -586,21 +598,22 @@ def _free_dubbing_vram():
         torch.cuda.empty_cache()
         if hasattr(torch.cuda, "ipc_collect"):
             torch.cuda.ipc_collect()
-    print("[VRAM] Freed translation/dubbing models for transcription.")
+    print(f"[VRAM] Freed translation/dubbing models for transcription{_vram_status()}.")
 
 def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
     if not state.video_info:
         return "Error: No video loaded.", None, _get_empty_segments_html(), None, "None"
     
+    # Free VRAM from any loaded translation/dubbing models BEFORE anything else,
+    # so both the Demucs subprocess and Whisper can fit on the GPU.
+    _free_dubbing_vram()
+
     progress(0.1, "Separating vocals...")
     stems = separator.separate(state.video_info['audio_44k'])
     state.video_info['vocals'] = stems['vocals']
     state.video_info['background'] = stems['background']
     if not state.keep_models:
         separator.cleanup()
-    
-    # Free VRAM from any loaded translation/dubbing models so Whisper can fit.
-    _free_dubbing_vram()
 
     progress(0.4, "Transcribing with WhisperX...")
     # Map display names to WhisperX language codes
@@ -623,13 +636,22 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
             state.video_info['audio_16k'],
             language=lang_code,
             enable_diarization=False,
-            initial_prompt=custom_prompt
+            initial_prompt=custom_prompt,
+            # Honour the Whisper Model dropdown instead of the singleton default.
+            model_size=model_size,
         )
     except Exception as e:
         import traceback
         traceback.print_exc()  # lands in app_run_err.log / console for diagnosis
+        msg = f"❌ Transcription failed: {type(e).__name__}: {e}"
+        if "out of memory" in str(e).lower():
+            msg += (
+                "\n💡 GPU out of VRAM. Pick a smaller Whisper model "
+                "(medium / small / base), close other GPU apps, then restart "
+                "the app to clear anything left in VRAM."
+            )
         return (
-            f"❌ Transcription failed: {type(e).__name__}: {e}",
+            msg,
             None, _get_empty_segments_html(), None, "None",
         )
     state.segments = res['segments']
@@ -3758,7 +3780,7 @@ BLOCKS_JS = """
                 if (text) {
                     target.setAttribute("data-tooltip", text);
                     target.removeAttribute("title");
-                    tooltipEl.textContent = text.replace(/<br\s*\/?>/gi, "\\n");
+                    tooltipEl.textContent = text.replace(/<br\\s*\\/?>/gi, "\\n");
                     tooltipEl.style.whiteSpace = "pre-line";
                     tooltipEl.classList.add("visible");
                     

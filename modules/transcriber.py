@@ -1,4 +1,5 @@
 import os
+import gc
 
 # --- Compat: expose CUDA 12 runtime DLLs to CTranslate2 (faster-whisper) ------
 # The ctranslate2 wheel is built against CUDA 12 and lazily LoadLibrary()s
@@ -335,13 +336,49 @@ class Transcriber:
             pass
         return extra
 
-    def transcribe(self, audio_path, language=None, enable_diarization=True, initial_prompt=None):
+    @staticmethod
+    def _vram_status():
+        """Human-readable VRAM state for diagnostics ('' when CUDA is unavailable)."""
+        if not torch.cuda.is_available():
+            return ""
+        free_b, total_b = torch.cuda.mem_get_info()
+        return (
+            f" | VRAM free {free_b / 1024 ** 3:.2f}/{total_b / 1024 ** 3:.2f} GB, "
+            f"allocated {torch.cuda.memory_allocated() / 1024 ** 3:.2f} GB, "
+            f"reserved {torch.cuda.memory_reserved() / 1024 ** 3:.2f} GB"
+        )
+
+    @staticmethod
+    def _pick_batch_size(free_bytes):
+        """Smaller batches = less activation VRAM.
+
+        Called AFTER the ASR model is resident, so `free_bytes` is what is left
+        for activations — on an 8 GB GPU with desktop usage that is often only
+        a few GB, where batch_size=16 overflows.
+        """
+        free_gb = free_bytes / 1024 ** 3
+        if free_gb >= 4.5:
+            return 16
+        if free_gb >= 2.5:
+            return 8
+        if free_gb >= 1.5:
+            return 4
+        return 2
+
+    def transcribe(self, audio_path, language=None, enable_diarization=True,
+                   initial_prompt=None, model_size=None, batch_size=None):
         """
         Transcribe audio with WhisperX.
+        model_size: optional per-call override (Whisper Model dropdown);
+                    falls back to the instance default.
+        batch_size: optional per-call override; defaults to a value derived
+                    from the VRAM free after loading the model.
         Returns {"language": str, "segments": list}
         """
+        if model_size:
+            self.model_size = model_size
         prompt = initial_prompt or DEFAULT_INITIAL_PROMPT
-        print(f"Loading WhisperX {self.model_size} on {self.device} with initial_prompt context...")
+        print(f"Loading WhisperX {self.model_size} on {self.device} with initial_prompt context...{self._vram_status()}")
         asr_options = {
             "initial_prompt": prompt,
             "condition_on_previous_text": False,
@@ -361,14 +398,39 @@ class Transcriber:
             print(f"Model loading error: {e}")
             raise
 
-        print("Transcription in progress...")
+        print("Transcription in progress..." + self._vram_status())
         model_a = None
         try:
             # All VRAM-heavy work runs inside this try so the models are always
             # released below — otherwise an OOM (or any error) during generation
             # / alignment leaks ~3 GB per attempt and compounds across retries.
             audio = whisperx.load_audio(audio_path)
-            result = model.transcribe(audio, batch_size=16)
+
+            # Pick a batch size that fits the VRAM left after the model loaded.
+            if batch_size is None:
+                if self.device == "cuda":
+                    free_b, _total_b = torch.cuda.mem_get_info()
+                    batch_size = self._pick_batch_size(free_b)
+                else:
+                    batch_size = 16
+            print(f"ASR batch_size={batch_size}" + self._vram_status())
+
+            # Retry with a halved batch on activation-spike OOM instead of
+            # failing the whole transcription (common on 8 GB GPUs).
+            bs = batch_size
+            while True:
+                try:
+                    result = model.transcribe(audio, batch_size=bs)
+                    break
+                except RuntimeError as oom:
+                    if "out of memory" not in str(oom).lower() or bs <= 1:
+                        raise
+                    new_bs = max(1, bs // 2)
+                    print(f"[VRAM] OOM at batch_size={bs}; retrying with batch_size={new_bs}{self._vram_status()}")
+                    bs = new_bs
+                    gc.collect()
+                    if self.device == "cuda":
+                        torch.cuda.empty_cache()
             detected_lang = result.get("language", "unknown")
 
             # Alignment
@@ -387,10 +449,18 @@ class Transcriber:
             )
         finally:
             # Cleanup alignment + ASR models on BOTH success and error paths.
-            cleanup_model(model_a)
-            cleanup_model(model)
+            # cleanup_model() only deletes ITS OWN parameter — it cannot drop the
+            # references held by this frame. Rebind them to None here, otherwise
+            # the ~3 GB ASR model stays resident while the alignment model loads
+            # (double occupancy → CUDA OOM on 8 GB GPUs).
+            model_a = None
+            model = None
+            gc.collect()
             if self.device == "cuda":
                 torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+            print(f"ASR/alignment models released{self._vram_status()}")
         
         # Re-enable TF32 — pyannote disables it for reproducibility,
         # but we need it for fast LLM/TTS inference on Ampere+ GPUs
