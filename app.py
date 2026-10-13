@@ -68,6 +68,9 @@ from modules.llm_backends import (
     is_custom_path_valid,
     clear_custom_model_path,
     reset_custom_backend_cache,
+    LLAMA_SERVER_BACKEND_NAME,
+    get_server_url,
+    set_server_url,
 )
 from modules.time_sync import TimeSync
 from modules.audio_mixer import AudioMixer
@@ -4642,6 +4645,17 @@ with gr.Blocks(title="ZastTranslate") as app:
                         )
                         btn_custom_llm_use = gr.Button("✅ Use this model", variant="secondary", scale=1)
                     custom_llm_status = gr.Textbox(label="Manual model status", interactive=False, visible=(current_llm_backend == CUSTOM_BACKEND_NAME), value=("" if is_custom_path_valid() else "⚠️ No manual model set — paste a local folder or .gguf path, then click 'Use this model'."))
+                    with gr.Row(visible=(current_llm_backend == LLAMA_SERVER_BACKEND_NAME)) as llama_server_row:
+                        llama_server_url = gr.Textbox(
+                            label="🔗 llama.cpp server URL (you run llama-server separately)",
+                            value=get_server_url(),
+                            placeholder="http://127.0.0.1:8080/v1",
+                            interactive=True,
+                            scale=3,
+                            info="Start llama-server yourself, e.g.: llama-server -m model.gguf --port 8080 -ngl 99 --ctx-size 4096. Paste the base URL (with /v1) here."
+                        )
+                        btn_llama_server_use = gr.Button("✅ Use this URL", variant="secondary", scale=1)
+                    llama_server_status = gr.Textbox(label="llama.cpp server status", interactive=False, visible=(current_llm_backend == LLAMA_SERVER_BACKEND_NAME), value=f"Using {get_server_url()} (reachability is checked when a translation runs).")
                     with gr.Accordion("💡 Guide: Choosing the Right LLM Model for Your GPU (VRAM & Performance Impact)", open=False):
                         gr.Markdown(
                             "> **Which model should you choose for your PC?**\n"
@@ -5848,7 +5862,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     
     def on_llm_backend_change(selected_backend):
         global reformulator, current_llm_backend
-        if selected_backend in available_llm_backends or selected_backend == CUSTOM_BACKEND_NAME:
+        if selected_backend in available_llm_backends or selected_backend == CUSTOM_BACKEND_NAME or selected_backend == LLAMA_SERVER_BACKEND_NAME:
             current_llm_backend = selected_backend
             user_config["llm_backend"] = selected_backend
             save_config(user_config)
@@ -5862,12 +5876,45 @@ with gr.Blocks(title="ZastTranslate") as app:
             if warn_msg:
                 gr.Warning(warn_msg)
             is_custom = (selected_backend == CUSTOM_BACKEND_NAME)
+            is_server = (selected_backend == LLAMA_SERVER_BACKEND_NAME)
             if is_custom and not is_custom_path_valid():
                 gr.Warning("Custom model selected — paste a local folder or .gguf path and click 'Use this model'.")
-            return {custom_llm_row: gr.update(visible=is_custom), custom_llm_status: gr.update(visible=is_custom)}
-        return {custom_llm_row: gr.update(), custom_llm_status: gr.update()}
+            if is_server:
+                gr.Info("llama.cpp server mode: make sure llama-server is running, then set/confirm the URL and click 'Use this URL'.")
+            return {
+                custom_llm_row: gr.update(visible=is_custom),
+                custom_llm_status: gr.update(visible=is_custom),
+                llama_server_row: gr.update(visible=is_server),
+                llama_server_status: gr.update(visible=is_server, value=f"Using {get_server_url()} (reachability is checked when a translation runs)."),
+            }
+        return {
+            custom_llm_row: gr.update(),
+            custom_llm_status: gr.update(),
+            llama_server_row: gr.update(),
+            llama_server_status: gr.update(),
+        }
 
-    llm_backend_dropdown.change(on_llm_backend_change, inputs=[llm_backend_dropdown], outputs=[custom_llm_row, custom_llm_status])
+    llm_backend_dropdown.change(
+        on_llm_backend_change,
+        inputs=[llm_backend_dropdown],
+        outputs=[custom_llm_row, custom_llm_status, llama_server_row, llama_server_status]
+    )
+
+    def on_llama_server_use(url_value):
+        try:
+            cleaned = set_server_url(url_value or "")
+        except Exception as e:
+            gr.Warning(str(e))
+            return f"❌ {e}"
+        # Best-effort reachability probe so the user gets immediate feedback,
+        # but a down server is not fatal here — translation will re-check.
+        try:
+            from modules.llm_backends.llama_server_backend import LlamaServerBackend
+            LlamaServerBackend(name=LLAMA_SERVER_BACKEND_NAME, base_url=cleaned).load()
+            return f"✅ Connected to llama.cpp server at {cleaned}."
+        except Exception as e:
+            gr.Warning(f"Saved {cleaned}, but could not connect yet:\n{e}")
+            return f"⚠️ Saved {cleaned}, but not reachable yet — is llama-server running on that port?"
 
     def on_custom_llm_use(path_value):
         global reformulator, current_llm_backend, available_llm_backends
@@ -5925,6 +5972,7 @@ with gr.Blocks(title="ZastTranslate") as app:
         return f"✅ Manual model ready: {cleaned} [{kind}] — translation/SEO will use it."
 
     btn_custom_llm_use.click(on_custom_llm_use, inputs=[custom_llm_path], outputs=[custom_llm_status])
+    btn_llama_server_use.click(on_llama_server_use, inputs=[llama_server_url], outputs=[llama_server_status])
 
     btn_transcribe.click(step2_transcribe, [lang_source, model_size], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full")
     btn_import_srt.click(step2b_import_srt, [srt_file_input, lang_source], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full", js=JS_SRT_WAIT)

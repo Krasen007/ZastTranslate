@@ -6,10 +6,19 @@ from .hybrid import (
     get_custom_model_path,
     is_custom_path_valid,
 )
+from .llama_server_backend import (
+    LlamaServerBackend,
+    get_server_url,
+    set_server_url,
+)
+
+# Label used in the UI dropdown for the external llama.cpp server entry.
+LLAMA_SERVER_BACKEND_NAME = "llama.cpp server (external — you run llama-server)"
 
 # Global cache for the active backend
 _active_llm_backend = None
 _custom_llm_backend = None
+_llama_server_backend = None
 
 def get_available_backends() -> dict:
     """Returns a clean list of available LLM backends with transparent C++ acceleration and VRAM guidance."""
@@ -83,7 +92,21 @@ def get_available_backends() -> dict:
                 available[CUSTOM_BACKEND_NAME] = placeholder
     except Exception as e:
         print(f"[Custom LLM] note: {e}")
-            
+
+    # External llama.cpp server: always listed. It has no engine/package
+    # requirement of its own — the user runs llama-server separately and this
+    # backend just talks to it over HTTP (reachability is checked at load()).
+    global _llama_server_backend
+    if _llama_server_backend is None:
+        _llama_server_backend = LlamaServerBackend(
+            name=LLAMA_SERVER_BACKEND_NAME,
+            base_url=get_server_url(),
+            capabilities={"languages": "all", "vram_gb": 0.0},
+        )
+    else:
+        _llama_server_backend.base_url = get_server_url().rstrip("/")
+    available[LLAMA_SERVER_BACKEND_NAME] = _llama_server_backend
+
     return available
 
 def reset_custom_backend_cache():

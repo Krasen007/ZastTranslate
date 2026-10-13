@@ -2,6 +2,12 @@ from .factory import (
     get_backend,
     get_available_backends,
     reset_custom_backend_cache,
+    LLAMA_SERVER_BACKEND_NAME,
+)
+from .llama_server_backend import (
+    LlamaServerBackend,
+    get_server_url,
+    set_server_url,
 )
 from .hybrid import (
     CUSTOM_BACKEND_NAME,

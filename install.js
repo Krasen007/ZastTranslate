@@ -74,7 +74,17 @@ module.exports = {
                 message: "uv pip install --no-deps --ignore-requires-python \"git+https://github.com/Aratako/MioCodec\" || echo \"BgTTS-38M backend unavailable - Bulgarian cloning falls back to Edge-TTS BG\""
             }
         },
-        // 4. Install llama-cpp-python for high-speed C++ GGUF inference & KV Cache
+        // 4. Install llama-cpp-python for high-speed C++ GGUF inference & KV Cache.
+        // IMPORTANT (Python 3.14): the old pinned wheel was cp310-only
+        // (llama_cpp_python-0.3.4-cp310-...-win_amd64.whl) and cannot install on
+        // 3.14, which is why local .gguf models failed while predefined models
+        // worked (they fall back to the PyTorch engine).
+        // New strategy — a fallback chain that always lands on something installable
+        // on 3.14 (ABI-agnostic `py3-none` wheels, loaded via ctypes):
+        //   1) Official CPU wheel from abetlen's index (py3-none, no compiler).
+        //      Guaranteed to install on 3.14 and run everywhere (CPU inference).
+        //   2) Source build as a last resort (GPU users can swap in an arch-specific
+        //      wheel, e.g. dougeeai sm_86 Ampere for RTX 3070 — see README).
         {
             when: "{{platform === 'win32'}}",
             method: "shell.run",
@@ -86,7 +96,7 @@ module.exports = {
                     "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
                     "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
-                message: "uv pip install https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.4-cu124/llama_cpp_python-0.3.4-cp310-cp310-win_amd64.whl || uv pip install llama-cpp-python"
+                message: "uv pip install \"llama-cpp-python @ https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/llama_cpp_python-0.3.36-py3-none-win_amd64.whl\" || uv pip install llama-cpp-python || echo \"llama-cpp-python unavailable - local .gguf Custom models disabled (predefined models still work via PyTorch)\""
             }
         },
         {
