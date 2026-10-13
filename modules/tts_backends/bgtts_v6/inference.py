@@ -53,7 +53,8 @@ def _split_text(text, tokenizer, max_len=250):
                         current = ''
                         for ch in w:
                             if len(tokenizer.build_encoder_input(current + ch)) > max_len:
-                                chunks.append(current)
+                                if current:
+                                    chunks.append(current)
                                 current = ch
                             else:
                                 current += ch

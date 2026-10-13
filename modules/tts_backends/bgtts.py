@@ -91,7 +91,14 @@ class BgTTSBackend(TTSBackend):
         }
 
     def is_available(self) -> bool:
+        import importlib.util
         try:
+            # Lightweight existence checks for the vendored model's heavy deps
+            # (bgtts_v6 imports them lazily, only when this backend is selected).
+            if importlib.util.find_spec("miocodec") is None:
+                return False
+            if importlib.util.find_spec("jsonargparse") is None:
+                return False
             import numpy as np  # noqa: F401
             import soundfile as sf  # noqa: F401
             from huggingface_hub import hf_hub_download  # noqa: F401

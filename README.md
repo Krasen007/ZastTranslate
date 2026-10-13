@@ -204,8 +204,8 @@ Under the main dialogue segments table, a specialized **Segment Editor Card** op
 | **Clone from original** | Clones the speaker's voice from the extracted vocals | Best result — sounds like the original speaker |
 | **Clone from file** | Uses an uploaded WAV/MP3 file as voice reference | When you want a specific voice (10-30s of clear speech) |
 
-> 💡 Voice cloning uses **VoxCPM 2**, installed automatically during setup.
-> Cloning options are automatically hidden when the selected TTS engine cannot clone (e.g. **Edge-TTS BG**) or when the target language has no clonable voice (**Bulgarian** — use `Default voice` with the native `bg-BG` voices).
+> 💡 Voice cloning uses **VoxCPM 2** (30 languages) or **BgTTS-38M** (Bulgarian + English), installed automatically during setup.
+> Cloning options are hidden automatically when the selected engine cannot clone the target language (e.g. **Edge-TTS BG**). For **Bulgarian** cloning, select the **BgTTS-38M** engine in Tab 1; with other engines use `Default voice` (native `bg-BG` voices).
 
 **🔊 Never Cut Vocal** mode speaks all text in full without truncation. Produces more natural speech but dubbing may drift out of sync with the video.
 

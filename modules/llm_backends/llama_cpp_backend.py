@@ -48,21 +48,27 @@ class LlamaCppBackend(LLMBackend):
         # `uv pip install llama-cpp-python` must build from source instead).
         try:
             import llama_cpp  # noqa: F401
-        except Exception:
-            import sys as _sys
+        except Exception as e:
+            # The cp310-wheel / Python 3.14 explanation only applies on
+            # Python >= 3.11 (the prebuilt wheel matches Python 3.10 exactly).
+            version_note = ""
+            if sys.version_info >= (3, 11):
+                version_note = (
+                    "The prebuilt CUDA wheel in install.js is cp310-only (llama_cpp_python-0.3.4-cp310-...-win_amd64.whl) "
+                    "and does NOT install on Python 3.14 — that is why your .gguf fails while predefined models work "
+                    "(they fall back to the PyTorch engine).\n"
+                )
             raise RuntimeError(
                 "llama-cpp-python is not installed, so this GGUF model cannot be loaded.\n"
-                f"Detected Python {_sys.version.split()[0]}. "
-                "The prebuilt CUDA wheel in install.js is cp310-only (llama_cpp_python-0.3.4-cp310-...-win_amd64.whl) "
-                "and does NOT install on Python 3.14 — that is why your .gguf fails while predefined models work "
-                "(they fall back to the PyTorch engine).\n"
+                f"Detected Python {sys.version.split()[0]}. "
+                f"{version_note}"
                 "Fix (pick one):\n"
                 "  A) Easiest — skip GGUF: pick a predefined model, or point the manual Custom field at a local "
                 "HF/transformers folder (config.json + safetensors) instead of a .gguf file.\n"
-                "  B) Install llama-cpp on Python 3.14 (needs a C++ build env + CMake, slow): "
+                "  B) Install llama-cpp (needs a C++ build env + CMake, slow): "
                 "pip install llama-cpp-python  (then restart the app).\n"
                 "  C) Use Python 3.10 for the app, then install the prebuilt CUDA wheel from install.js."
-            )
+            ) from e
             
         print(f"Loading GGUF/C++ LLM ({self.name} - {self.repo_id}/{self.filename})...")
         

@@ -214,9 +214,6 @@ class AcceleratedLLMBackend(LLMBackend):
                 for _f in _files:
                     if _f.lower().endswith(".gguf"):
                         gguf_hits.append(os.path.join(_root, _f))
-                        break
-                if gguf_hits:
-                    break
             if gguf_hits:
                 # Prefer the largest file (main weights over MTP/projection shards).
                 gguf_hits.sort(key=lambda p: os.path.getsize(p), reverse=True)
@@ -230,6 +227,7 @@ class AcceleratedLLMBackend(LLMBackend):
 
         # Manual local model fast-path: absolute local HF folder -> PyTorch engine directly
         # (avoids the Hub-cache lookup below, which would mis-handle absolute paths).
+        has_local_pt = None  # None = not yet determined (no local folder fast-path taken)
         maybe_local_folder = os.path.abspath(os.path.expanduser(self.model_id)) if isinstance(self.model_id, str) else ""
         if maybe_local_folder and os.path.isdir(maybe_local_folder):
             if not self.gguf_repo:  # pure folder backend (custom manual folder)
@@ -249,9 +247,7 @@ class AcceleratedLLMBackend(LLMBackend):
 
         # Check if local PyTorch model already exists
         hf_dir = os.path.expanduser("~/.zasttranslate/models/hub")
-        try:
-            has_local_pt
-        except NameError:
+        if has_local_pt is None:
             pt_folder = f"models--{self.model_id.replace('/', '--')}"
             has_local_pt = os.path.exists(os.path.join(hf_dir, pt_folder))
 

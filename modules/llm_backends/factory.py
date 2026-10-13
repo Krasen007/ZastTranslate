@@ -59,7 +59,10 @@ def get_available_backends() -> dict:
     try:
         custom_path = get_custom_model_path()
         if custom_path and is_custom_path_valid(custom_path):
-            _custom_llm_backend = build_custom_backend(custom_path)
+            # Reuse the cached instance; it is rebuilt only via
+            # reset_custom_backend_cache() (called when a new path is saved).
+            if _custom_llm_backend is None:
+                _custom_llm_backend = build_custom_backend(custom_path)
             if _custom_llm_backend.is_available():
                 available[CUSTOM_BACKEND_NAME] = _custom_llm_backend
             else:
@@ -95,8 +98,9 @@ def get_backend(name: str):
     If a different backend is currently loaded, it unloads it to free VRAM.
     """
     global _active_llm_backend
+    global _custom_llm_backend
 
-    # Manual custom model: build on demand from the persisted path.
+    # Manual custom model: reuse the cached backend built from the persisted path.
     # NOTE: must NEVER raise here — app.py calls get_backend() at startup to
     # compute INITIAL_VALID_LANGS. If no valid path is saved yet, return a
     # lightweight placeholder (languages="all") so the app boots; the real
@@ -111,8 +115,14 @@ def get_backend(name: str):
                 gguf_file=None,
                 capabilities={"languages": "all", "vram_gb": 6.0},
             )
-        requested_backend = build_custom_backend(custom_path)
-        if _active_llm_backend is not None and getattr(_active_llm_backend, "name", "") != requested_backend.name:
+        # Reuse the cached custom backend; rebuild only after
+        # reset_custom_backend_cache() clears it (new path saved).
+        if _custom_llm_backend is None:
+            _custom_llm_backend = build_custom_backend(custom_path)
+        requested_backend = _custom_llm_backend
+        if _active_llm_backend is not None and _active_llm_backend is not requested_backend:
+            # Different instance (e.g. a stale loaded custom backend): unload it
+            # before replacing so its VRAM is freed.
             print(f"Switching LLM Backend: Unloading {_active_llm_backend.name} to free VRAM...")
             try:
                 _active_llm_backend.unload()
