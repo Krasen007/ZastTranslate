@@ -1306,8 +1306,119 @@ def step4_translate(target_lang, original_title="", original_desc="", progress=g
         
     return status_msg, data, _get_segments_json_html(), translated_title, translated_desc, srt_path, "Translation (Fitted)"
 
+def step3b_import_translation_srt(srt_file, target_lang):
+    """Import an already-translated SRT into the Translation tab (standalone step).
+
+    Lets a user skip the LLM translation entirely and go straight to Dubbing with
+    their own translated subtitles. The imported cues populate the Translation grid
+    (Start / End / Original / Translation / Fitted) and unlock Validate → Dubbing,
+    exactly like a completed translation.
+    """
+    if srt_file is None:
+        return "Error: No SRT file selected.", None, _get_empty_segments_html(), None, None, None, "None"
+
+    file_path = srt_file.name if hasattr(srt_file, "name") else str(srt_file)
+    try:
+        segments, errors = srt_parser.convert_user_srt_to_segments(file_path)
+    except Exception as e:
+        return f"Error parsing SRT: {e}", None, _get_empty_segments_html(), None, None, None, "None"
+
+    if not segments:
+        return "Error: No cues found in the SRT file.", None, _get_empty_segments_html(), None, None, None, "None"
+
+    if state.video_info is None:
+        state.video_info = {}
+
+    # Resolve target language so CPS fitting, SRT export and dubbing all agree.
+    target_lang_code = LANGUAGES.get(target_lang, target_lang)
+    state.video_info["target_language"] = target_lang_code
+    state.video_info["target_language_name"] = target_lang
+
+    # Preserve original timing + source text when we already have a transcription of
+    # the same length (the normal case: transcribe → import your own translation).
+    # Otherwise fall back to the SRT's own timings so the step still works standalone.
+    src_segments = state.segments if (state.segments and len(state.segments) == len(segments)) else None
+
+    lang_iso = _get_iso_code(target_lang_code).lower()
+    cps = get_effective_cps(lang_iso, _user_cps_overrides)
+    speed_factor = tts_engine.capabilities.get("fitted_speed_factor", MAX_SPEED_FACTOR)
+
+    new_translated = []
+    data = []
+    for i, seg in enumerate(segments):
+        text = str(seg.get("text", "")).strip()
+        if src_segments:
+            start = src_segments[i].get("start", seg["start"])
+            end = src_segments[i].get("end", seg["end"])
+            original = src_segments[i].get("text", "")
+        else:
+            start = seg["start"]
+            end = seg["end"]
+            original = ""
+
+        # An imported translation is taken verbatim: it is both the "normal" full
+        # text and the "fitted" text. No CPS re-fitting is applied so the user's
+        # wording is preserved exactly; the fit-status badge is informational only.
+        duration = end - start
+        max_chars = int(duration * cps * speed_factor) if duration > 0 else 0
+        status = "✅" if (max_chars == 0 or len(text) <= max_chars * 1.1) else "⚠️"
+
+        new_translated.append({
+            "start": start,
+            "end": end,
+            "text": original,
+            "translated_text": text,
+            "normal_text": text,
+            "fitted_text": text,
+        })
+        data.append([
+            round(start, 2),
+            round(end, 2),
+            original,
+            text,
+            f"{status} {text}",
+        ])
+
+    state.translated_segments = new_translated
+
+    # Export translated + fitted SRTs for download parity with the normal translation.
+    srt_path = None
+    iso = _get_iso_code(target_lang_code)
+    try:
+        fitted_path = os.path.join(OUTPUT_DIR, f"fitted_{iso}.srt")
+        srt_parser.segments_to_clean_srt(state.translated_segments, fitted_path, text_key="translated_text", lang_code=target_lang_code, clean_fillers=False)
+        shutil.copy2(fitted_path, os.path.join(TEMP_DIR, f"fitted_{iso}.srt"))
+        norm_path = os.path.join(OUTPUT_DIR, f"translation_{iso}.srt")
+        srt_parser.segments_to_clean_srt(state.translated_segments, norm_path, text_key="normal_text", lang_code=target_lang_code, clean_fillers=False)
+        shutil.copy2(norm_path, os.path.join(TEMP_DIR, f"translation_{iso}.srt"))
+        srt_path = fitted_path
+    except Exception as e:
+        print(f"[EXPORT] Warning saving imported translation SRTs: {e}")
+
+    warning = ""
+    if errors:
+        warning = f" Warnings: {'; '.join(errors)}"
+    status_msg = (
+        f"Translation SRT imported ({len(data)} segments).{warning} "
+        f"Review below, then click 'Validate Translation ✅' to unlock Dubbing."
+    )
+
+    return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation (Fitted)"
+
 def step5_save_translation(data, dubbing_text_source="Fitted Translation", translated_title="", translated_desc=""):
     rows = _dataframe_to_rows(data)
+    # Gradio 6 can occasionally deliver an empty/None Dataframe payload (e.g. when
+    # the "Continue to Dubbing" button re-reads the grid right after a re-render, or
+    # a stale interaction races the table). If the grid looks empty but a valid
+    # translation is already held in state, rebuild the rows from state instead of
+    # hard-failing with "No translation data found" — keeps Validate idempotent and
+    # never wipes segments_json_holder / dubbing_segments_df for a good project.
+    if len(rows) == 0 and state.translated_segments:
+        rows = [[
+            s.get("start", 0.0), s.get("end", 0.0), s.get("text", ""),
+            s.get("normal_text", s.get("translated_text", "")),
+            s.get("translated_text", ""),
+        ] for s in state.translated_segments]
     count = 0
     import re
     for i, row in enumerate(rows):
@@ -4623,6 +4734,8 @@ with gr.Blocks(title="ZastTranslate") as app:
                     )
                     with gr.Row():
                         btn_translate = gr.Button("▶️ Run Translation", interactive=False, variant="primary", elem_id="btn_run_translation")
+                        translation_srt_input = gr.File(label="…or import an already-translated SRT (skips the LLM)", file_types=[".srt"], elem_id="translation_srt_input", scale=2)
+                        btn_import_translation = gr.Button("📥 Import Translated SRT", variant="secondary", elem_id="btn_import_translation_srt", scale=1)
                     translation_status = gr.Textbox(label="Status", interactive=False)
                     translation_df = gr.Dataframe(
                         headers=["Start", "End", "Original", "Translation", "Fitted"],
@@ -4633,7 +4746,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                         max_height=350,
                         elem_id="translation_df"
                     )
-                    _tab3_actions_tooltip = zast_tooltip("• Validate: Saves translation and unlocks Tab 4 (Dubbing).\n• Export Translation SRT: Downloads the full literal translated subtitles.\n• Export Fitted SRT: Downloads the concise dubbing-ready subtitles calibrated for vocal duration.\n• Open Folder: Opens the output directory in Windows Explorer.")
+                    _tab3_actions_tooltip = zast_tooltip("• Run Translation: LLM-transcribes the source into the target language (fitted + natural).\n• Import Translated SRT: Skip the LLM — load your own already-translated .srt straight into this tab.\n• Validate: Saves translation and unlocks Tab 4 (Dubbing).\n• Export Translation SRT: Downloads the full literal translated subtitles.\n• Export Fitted SRT: Downloads the concise dubbing-ready subtitles calibrated for vocal duration.\n• Open Folder: Opens the output directory in Windows Explorer.")
                     gr.Markdown(f"**⚡ Validation & Subtitle Export** {_tab3_actions_tooltip}")
                     with gr.Row():
                         btn_valid_translation = gr.Button("Validate Translation ✅", variant="primary", elem_classes=["zast-btn-validate"])
@@ -5690,6 +5803,32 @@ with gr.Blocks(title="ZastTranslate") as app:
         return args;
     }"""
 
+    # Same upload-wait logic, but for the Translation tab's translated-SRT file input.
+    JS_TRANSLATION_SRT_WAIT = """async (...args) => {
+        const container = document.getElementById("translation_srt_input");
+        if (!container) return args;
+        const isUploading = () => {
+            return container.querySelector("[role='progressbar']") ||
+                   container.querySelector(".progress-bar") ||
+                   container.querySelector(".progress") ||
+                   container.querySelector(".progress-ring") ||
+                   container.querySelector(".uploading") ||
+                   container.textContent.includes("Uploading") ||
+                   container.textContent.includes("Chargement");
+        };
+        if (isUploading()) {
+            await new Promise((resolve) => {
+                const interval = setInterval(() => {
+                    if (!isUploading()) {
+                        clearInterval(interval);
+                        resolve();
+                    }
+                }, 100);
+            });
+        }
+        return args;
+    }"""
+
     # EVENTS
     btn_check.click(step0_check_url, [url_input], [status_dl, yt_resolution, btn_dl])
     btn_dl.click(step1_download, [url_input, file_input, yt_resolution, local_title_input], [status_dl, video_preview, audio_preview, btn_transcribe, btn_import_metadata, bulk_output_type, final_video_out, btn_import_metadata_single], show_progress="full", js=JS_DOWNLOAD_WAIT)
@@ -5821,7 +5960,14 @@ with gr.Blocks(title="ZastTranslate") as app:
         [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection],
         show_progress="full"
     )
-    
+    btn_import_translation.click(
+        step3b_import_translation_srt,
+        [translation_srt_input, lang_target],
+        [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection],
+        show_progress="full",
+        js=JS_TRANSLATION_SRT_WAIT
+    )
+
     btn_valid_translation.click(
         step5_save_translation,
         [translation_df, dubbing_text_source, translated_title_input, translated_desc_input],
@@ -5901,13 +6047,13 @@ with gr.Blocks(title="ZastTranslate") as app:
     voice_mode.change(toggle_voice_inputs, inputs=[voice_mode], outputs=[voice_file, default_voice_gender])
     bulk_voice_mode.change(toggle_voice_inputs, inputs=[bulk_voice_mode], outputs=[bulk_voice_file, bulk_default_voice_gender])
 
-    # Voice Mode choices depend on the TTS engine (cloning capability) and on the target
-    # language (Bulgarian has no clonable voice), so refresh both radios on every change.
-    voice_mode.change(
-        update_voice_mode_ui,
-        inputs=[tts_backend_dropdown, lang_target],
-        outputs=[voice_mode, bulk_voice_mode]
-    )
+    # Voice Mode choices depend on the TTS engine (cloning capability) and on the
+    # target language (Bulgarian has no clonable voice), so refresh both radios when
+    # either of those two inputs changes.
+    # NOTE: do NOT bind this to voice_mode.change — update_voice_mode_ui always returns
+    # value=VOICE_MODE_DEFAULT, so a self-referential binding would snap the radio back
+    # to "Default voice" the instant the user picks "Clone from original"/"Clone from
+    # file", making cloning impossible to select.
     tts_backend_dropdown.change(
         update_voice_mode_ui,
         inputs=[tts_backend_dropdown, lang_target],
