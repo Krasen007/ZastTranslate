@@ -131,31 +131,75 @@ class LlamaServerBackend(LLMBackend):
         self._loaded = False
         gc.collect()
 
+    # -- response helpers -----------------------------------------------------
+
+    @staticmethod
+    def _message(resp: dict) -> dict:
+        """Pull the assistant message out of a chat/completions response."""
+        try:
+            return resp["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected llama-server response shape: {resp}") from e
+
+    @classmethod
+    def _extract_content(cls, resp: dict) -> str:
+        """Return the assistant ANSWER text from a chat/completions response.
+
+        Reasoning / hybrid models (e.g. Qwen3-based Qwythos/Mythos) split their
+        output into `reasoning_content` (the internal "thinking") and `content`
+        (the real answer). We only ever want the answer, so this reads `content`
+        and NEVER falls back to the reasoning trace (that would be meta-text,
+        not the translation).
+        """
+        content = cls._message(resp).get("content")
+        return content if content is not None else ""
+
+    @classmethod
+    def _has_reasoning(cls, resp: dict) -> bool:
+        """True when the model emitted a non-empty reasoning trace. Used to detect
+        that `content` came back empty only because the budget was spent thinking."""
+        reasoning = cls._message(resp).get("reasoning_content")
+        return bool(reasoning and str(reasoning).strip())
+
     def generate(self, messages: list, max_new_tokens: int = 4096, multiline: bool = False, **kwargs) -> str:
         if not self._loaded:
             self.load()
 
         do_sample = kwargs.get("do_sample", True)
         temperature = kwargs.get("temperature", 0.3)
-        payload = {
-            "model": "local-model",  # llama-server ignores this and uses its loaded model
-            "messages": messages,
-            "max_tokens": max_new_tokens,
-            "temperature": temperature if do_sample else 0.0,
-            "stream": False,
-        }
-        # llama-server accepts repeat_penalty; harmless if the endpoint ignores it.
-        rp = kwargs.get("repetition_penalty")
-        if rp:
-            payload["repeat_penalty"] = rp
+
+        def _payload(mnt: int) -> dict:
+            p = {
+                "model": "local-model",  # llama-server ignores this and uses its loaded model
+                "messages": messages,
+                "max_tokens": mnt,
+                "temperature": temperature if do_sample else 0.0,
+                "stream": False,
+                # Hybrid reasoning models (e.g. Qwen3-based Qwythos/Mythos) spend the
+                # ENTIRE token budget on `reasoning_content` ("thinking") and never emit
+                # the actual `content` answer unless thinking is disabled. Dubbing needs
+                # the plain translation, so disable it. This is harmless for
+                # non-reasoning models (llama-server ignores an unused chat-template kwarg).
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+            # llama-server accepts repeat_penalty; harmless if the endpoint ignores it.
+            rp = kwargs.get("repetition_penalty")
+            if rp:
+                p["repeat_penalty"] = rp
+            return p
 
         # Long translations can take a while - allow a generous timeout.
-        resp = self._request("/chat/completions", payload=payload, timeout=600.0)
-        try:
-            choice = resp["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as e:
-            raise RuntimeError(f"Unexpected llama-server response shape: {resp}") from e
-        return choice if choice is not None else ""
+        resp = self._request("/chat/completions", payload=_payload(max_new_tokens), timeout=600.0)
+        content = self._extract_content(resp)
+
+        # Defensive: older llama.cpp builds may ignore `chat_template_kwargs` and still
+        # burn the budget on reasoning, leaving `content` empty. If that happened, retry
+        # once with a much larger budget so the model can finish thinking AND answer.
+        if not content and self._has_reasoning(resp):
+            bigger = max(int(max_new_tokens) * 6, int(max_new_tokens) + 512)
+            resp = self._request("/chat/completions", payload=_payload(bigger), timeout=600.0)
+            content = self._extract_content(resp)
+        return content
 
     def generate_batch(self, messages_list: list, max_new_tokens_list: list, **kwargs) -> list:
         # llama-server handles one completion at a time (unless run with --parallel);

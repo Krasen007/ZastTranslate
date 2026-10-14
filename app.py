@@ -536,7 +536,11 @@ def reset_project():
         "",                                  # seo_tags_out
         "",                                  # seo_chapters_out
         "",                                  # seo_desc_out
-        ""                                   # seo_status
+        "",                                  # seo_status
+        gr.update(interactive=False),  # btn_next_tab1 (locked: no media imported)
+        gr.update(interactive=False),  # btn_next_tab2 (locked: no transcription)
+        gr.update(interactive=False),  # btn_next_tab3 (locked: no translation)
+        gr.update(interactive=False),  # btn_next_tab4_to_shorts (locked: not dubbed)
     )
 
 
@@ -591,7 +595,8 @@ def step1_download(url, local_file, resolution, custom_title="", progress=gr.Pro
                 show_btn,
                 gr.update(value="Audio Only", choices=["Audio Only", "Subtitles & Metadata Only"]),
                 gr.update(visible=False, value=None),
-                show_btn
+                show_btn,
+                gr.update(interactive=True)   # btn_next_tab1 (video/audio imported)
             )
         else:
             return (
@@ -602,7 +607,8 @@ def step1_download(url, local_file, resolution, custom_title="", progress=gr.Pro
                 show_btn,
                 gr.update(value="Video + Audio", choices=["Video + Audio", "Audio Only", "Subtitles & Metadata Only"]),
                 gr.update(visible=True, value=None),
-                show_btn
+                show_btn,
+                gr.update(interactive=True)   # btn_next_tab1 (video/audio imported)
             )
     except Exception as e:
         return (
@@ -613,7 +619,8 @@ def step1_download(url, local_file, resolution, custom_title="", progress=gr.Pro
             gr.update(visible=False),
             gr.update(value="Video + Audio", choices=["Video + Audio", "Audio Only", "Subtitles & Metadata Only"]),
             gr.update(visible=True),
-            gr.update(visible=False)
+            gr.update(visible=False),
+            gr.update(interactive=False)     # btn_next_tab1 (import failed)
         )
 
 def _vram_status():
@@ -659,8 +666,8 @@ def _free_dubbing_vram():
 
 def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
     if not state.video_info:
-        return "Error: No video loaded.", None, _get_empty_segments_html(), None, "None"
-    
+        return "Error: No video loaded.", None, _get_empty_segments_html(), None, "None", gr.update(interactive=False)
+
     # Free VRAM from any loaded translation/dubbing models BEFORE anything else,
     # so both the Demucs subprocess and Whisper can fit on the GPU.
     _free_dubbing_vram()
@@ -709,7 +716,7 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
             )
         return (
             msg,
-            None, _get_empty_segments_html(), None, "None",
+            None, _get_empty_segments_html(), None, "None", gr.update(interactive=False),
         )
     state.segments = res['segments']
     state.video_info['detected_language'] = res['language']
@@ -776,19 +783,19 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
         print(f"Auto-export transcription SRT error: {e}")
         srt_path = None
     
-    return f"Transcription complete ({len(data)} segments). Subtitles ready to download below. Click 'Validate Transcription' to proceed.", data, _get_segments_json_html(), srt_path, "Original"
+    return f"Transcription complete ({len(data)} segments). Subtitles ready to download below. Click 'Validate Transcription' to proceed.", data, _get_segments_json_html(), srt_path, "Original", gr.update(interactive=True)
 
 def step2b_import_srt(srt_file, lang_source):
     """Import an SRT file as transcription."""
     if srt_file is None:
-        return "Error: No SRT file selected.", None, _get_empty_segments_html(), None, "None"
+        return "Error: No SRT file selected.", None, _get_empty_segments_html(), None, "None", gr.update(interactive=False)
     
     file_path = srt_file.name if hasattr(srt_file, "name") else str(srt_file)
     try:
         segments, errors = srt_parser.convert_user_srt_to_segments(file_path)
         
         if not segments:
-            return "Error: No segments found in SRT file.", None, _get_empty_segments_html(), None, "None"
+            return "Error: No segments found in SRT file.", None, _get_empty_segments_html(), None, "None", gr.update(interactive=False)
         
         if state.video_info is None:
             state.video_info = {}
@@ -877,9 +884,9 @@ def step2b_import_srt(srt_file, lang_source):
         except Exception:
             srt_path = None
 
-        return f"SRT imported ({len(data)} segments).{warning} Subtitles ready below. Click 'Validate Transcription'.", data, _get_segments_json_html(), srt_path, "Original"
+        return f"SRT imported ({len(data)} segments).{warning} Subtitles ready below. Click 'Validate Transcription'.", data, _get_segments_json_html(), srt_path, "Original", gr.update(interactive=True)
     except Exception as e:
-        return f"Error importing SRT: {str(e)}", None, _get_empty_segments_html(), None, "None"
+        return f"Error importing SRT: {str(e)}", None, _get_empty_segments_html(), None, "None", gr.update(interactive=False)
 
 def step2_clean_transcription(df_data, lang_source, progress=gr.Progress()):
     """Clean oral fillers and polish transcription text in the editor."""
@@ -1136,7 +1143,7 @@ def step3_save_transcription(data):
             print(f"WARNING: Skipping row {row}: {e}")
     state.segments = new_segments
     if len(new_segments) == 0:
-        return "⚠️ No segments found. Make sure the transcription table has data.", gr.update(interactive=False), gr.update(interactive=False), _get_empty_segments_html(), None
+        return "⚠️ No segments found. Make sure the transcription table has data.", gr.update(interactive=False), gr.update(interactive=False), _get_empty_segments_html(), None, gr.update(interactive=False)
 
     src_lang = state.video_info.get('detected_language', 'fr') if state.video_info else 'fr'
     iso = _get_iso_code(src_lang)
@@ -1147,14 +1154,14 @@ def step3_save_transcription(data):
     except Exception:
         srt_path = None
 
-    return f"✅ Transcription validated ({len(new_segments)} segments). Subtitles saved to output/{os.path.basename(srt_path) if srt_path else ''}. Go to 'Translation' tab.", gr.update(interactive=True), gr.update(interactive=True), _get_segments_json_html(), srt_path
+    return f"✅ Transcription validated ({len(new_segments)} segments). Subtitles saved to output/{os.path.basename(srt_path) if srt_path else ''}. Go to 'Translation' tab.", gr.update(interactive=True), gr.update(interactive=True), _get_segments_json_html(), srt_path, gr.update(interactive=True)
 
-def step4_translate(target_lang, original_title="", original_desc="", progress=gr.Progress()):
+def step4_translate(target_lang, original_title="", original_desc="", whisper_only=False, disable_fitted=False, progress=gr.Progress()):
     # Translate works straight from the last transcription — if the table was
     # never validated, fall back to state.segments instead of hard-failing, so
     # the button never looks dead after a good transcription.
     if not state.segments:
-        return "Error: No transcription available. Run Transcribe (Tab 2) or Validate first.", [], _get_empty_segments_html(), "", "", None, "None"
+        return "Error: No transcription available. Run Transcribe (Tab 2) or Validate first.", [], _get_empty_segments_html(), "", "", None, "None", gr.update(interactive=False)
 
     # Clear old synced segment audio cache when running a new translation
     import glob
@@ -1189,79 +1196,128 @@ def step4_translate(target_lang, original_title="", original_desc="", progress=g
         state.video_info['target_language'] = target_lang_code
         state.video_info['target_language_name'] = target_lang
 
+    # Display name of the source language for the NLLB (non-LLM) translator,
+    # which keys off LANGUAGES display names. The detected source is an ISO
+    # code ('fr', 'en', ...), so normalize both spellings up front.
+    src_lang_name = reformulator._source_language_name(source_lang)
+    tgt_lang_name = reformulator._language_name(target_lang_code)
+    if tgt_lang_name == "Unknown":
+        tgt_lang_name = target_lang
+
     translated_title = ""
     translated_desc = ""
     if original_title or original_desc:
         progress(0.02, "Translating metadata...")
-        if original_title:
-            translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
-        if original_desc:
-            translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
+        if whisper_only:
+            # Whisper-only mode: never touch the LLM — use the NLLB translator.
+            if original_title:
+                translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
+            if original_desc:
+                translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
+        else:
+            if original_title:
+                translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
+            if original_desc:
+                translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
         if state.video_info:
             state.video_info['translated_title'] = translated_title
             state.video_info['translated_description'] = translated_desc
-    
-    # PHASE 1: LLM fitted translation — concision calibrated to TTS speaking rate
-    progress(0.1, "Phase 1/3: Fitted translation (time-constrained)...")
-    translated = reformulator.translate_segments(
-        state.segments, source_lang, target_lang, target_lang_code,
-        cps=cps, speed_factor=speed_factor
-    )
-    state.translated_segments = translated
-    
-    # PHASE 2: LLM reformulation for segments STILL too long (safety net)
-    progress(0.4, "Phase 2/2: Reformulating remaining long segments...")
+
     reformulated_count = 0
 
-    # Identify segments that still exceed timing (skip in same-language mode to preserve 100% of authentic speech)
-    long_segments_info = []
-    src_name = reformulator._source_language_name(source_lang)
-    tgt_name = reformulator._language_name(target_lang_code)
-    if src_name != tgt_name:
-        for idx, seg in enumerate(state.translated_segments):
-            text = seg.get("translated_text", "")
-            duration = seg["end"] - seg["start"]
-            max_chars = int(duration * cps * speed_factor)
-            if len(text) > max_chars * 1.1 and text.strip():
-                long_segments_info.append((idx, text, max_chars, seg))
+    if whisper_only:
+        # Whisper-only mode: translate with the standalone NLLB model, no LLM.
+        progress(0.3, "Translating with NLLB (no LLM)...")
+        translated = translator.translate_segments(state.segments, src_lang_name, tgt_lang_name)
+        state.translated_segments = translated
+        # Fitted == natural in this mode (NLLB is not time-aware); keep columns in sync.
+        for seg in state.translated_segments:
+            seg["normal_text"] = seg.get("translated_text", "")
+    else:
+        # PHASE 1: LLM fitted translation — concision calibrated to TTS speaking rate.
+        # Skipped when "Disable Fitted Translation" is checked: we go straight to a
+        # single natural full translation and mirror it into the fitted column.
+        if disable_fitted:
+            progress(0.1, "Natural translation only (fitted translation disabled)...")
+            translated = [dict(s) for s in state.segments]
+            state.translated_segments = translated
+            reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
+            for seg in state.translated_segments:
+                seg["translated_text"] = seg.get("normal_text", seg.get("translated_text", ""))
+        else:
+            progress(0.1, "Phase 1/3: Fitted translation (time-constrained)...")
+            translated = reformulator.translate_segments(
+                state.segments, source_lang, target_lang, target_lang_code,
+                cps=cps, speed_factor=speed_factor
+            )
+            state.translated_segments = translated
 
-    if long_segments_info:
-        print(f"Reformulating {len(long_segments_info)} overflowing segments using GPU-batched inference...")
-        items_to_shorten = [(text, max_chars) for _, text, max_chars, _ in long_segments_info]
-        shortened_results = reformulator.shorten_batch(items_to_shorten, target_lang_code, batch_size=8)
+            # PHASE 2: LLM reformulation for segments STILL too long (safety net)
+            progress(0.4, "Phase 2/2: Reformulating remaining long segments...")
 
-        for (_, text, _, seg), shortened in zip(long_segments_info, shortened_results):
-            if shortened and len(shortened) < len(text):
-                seg["translated_text"] = shortened
-                seg["reformulated"] = True
-                reformulated_count += 1
-                print(f"  Reformulated [{seg['start']:.1f}-{seg['end']:.1f}]: {len(text)}→{len(shortened)} chars")
+            # Identify segments that still exceed timing (skip in same-language mode to preserve 100% of authentic speech)
+            long_segments_info = []
+            src_name = reformulator._source_language_name(source_lang)
+            tgt_name = reformulator._language_name(target_lang_code)
+            if src_name != tgt_name:
+                for idx, seg in enumerate(state.translated_segments):
+                    text = seg.get("translated_text", "")
+                    duration = seg["end"] - seg["start"]
+                    max_chars = int(duration * cps * speed_factor)
+                    if len(text) > max_chars * 1.1 and text.strip():
+                        long_segments_info.append((idx, text, max_chars, seg))
 
-    if reformulated_count > 0:
-        print(f"Reformulated {reformulated_count} segments to fit timing")
+            if long_segments_info:
+                print(f"Reformulating {len(long_segments_info)} overflowing segments using GPU-batched inference...")
+                items_to_shorten = [(text, max_chars) for _, text, max_chars, _ in long_segments_info]
+                shortened_results = reformulator.shorten_batch(items_to_shorten, target_lang_code, batch_size=8)
 
-    # PHASE 3: Natural full translation for the 'Translation' column
-    progress(0.6, "Phase 3/3: Natural full translation (unconstrained)...")
-    reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
+                for (_, text, _, seg), shortened in zip(long_segments_info, shortened_results):
+                    if shortened and len(shortened) < len(text):
+                        seg["translated_text"] = shortened
+                        seg["reformulated"] = True
+                        reformulated_count += 1
+                        print(f"  Reformulated [{seg['start']:.1f}-{seg['end']:.1f}]: {len(text)}→{len(shortened)} chars")
+
+            if reformulated_count > 0:
+                print(f"Reformulated {reformulated_count} segments to fit timing")
+
+            # PHASE 3: Natural full translation for the 'Translation' column
+            progress(0.6, "Phase 3/3: Natural full translation (unconstrained)...")
+            reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
 
     if original_title.strip():
-        try:
-            translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
-        except Exception:
+        if whisper_only:
             try:
-                translated_title = translator.translate_text(original_title, source_lang, target_lang)
+                translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
             except Exception as e:
                 print(f"Title translation error: {e}")
                 translated_title = original_title
-    if original_desc.strip():
-        try:
-            translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
-        except Exception:
+        else:
             try:
-                translated_desc = translator.translate_text(original_desc, source_lang, target_lang)
+                translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
+            except Exception:
+                try:
+                    translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
+                except Exception as e:
+                    print(f"Title translation error: {e}")
+                    translated_title = original_title
+    if original_desc.strip():
+        if whisper_only:
+            try:
+                translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
             except Exception as e:
                 print(f"Description translation error: {e}")
                 translated_desc = original_desc
+        else:
+            try:
+                translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
+            except Exception:
+                try:
+                    translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
+                except Exception as e:
+                    print(f"Description translation error: {e}")
+                    translated_desc = original_desc
 
     state.video_info['translated_title'] = translated_title
     state.video_info['translated_description'] = translated_desc
@@ -1307,7 +1363,7 @@ def step4_translate(target_lang, original_title="", original_desc="", progress=g
         print(f"[EXPORT] Warning saving translation SRTs: {e}")
         srt_path = None
         
-    return status_msg, data, _get_segments_json_html(), translated_title, translated_desc, srt_path, "Translation (Fitted)"
+    return status_msg, data, _get_segments_json_html(), translated_title, translated_desc, srt_path, "Translation (Fitted)", gr.update(interactive=True)
 
 def step3b_import_translation_srt(srt_file, target_lang):
     """Import an already-translated SRT into the Translation tab (standalone step).
@@ -1318,16 +1374,16 @@ def step3b_import_translation_srt(srt_file, target_lang):
     exactly like a completed translation.
     """
     if srt_file is None:
-        return "Error: No SRT file selected.", None, _get_empty_segments_html(), None, None, None, "None"
+        return "Error: No SRT file selected.", None, _get_empty_segments_html(), None, None, None, "None", gr.update(interactive=False)
 
     file_path = srt_file.name if hasattr(srt_file, "name") else str(srt_file)
     try:
         segments, errors = srt_parser.convert_user_srt_to_segments(file_path)
     except Exception as e:
-        return f"Error parsing SRT: {e}", None, _get_empty_segments_html(), None, None, None, "None"
+        return f"Error parsing SRT: {e}", None, _get_empty_segments_html(), None, None, None, "None", gr.update(interactive=False)
 
     if not segments:
-        return "Error: No cues found in the SRT file.", None, _get_empty_segments_html(), None, None, None, "None"
+        return "Error: No cues found in the SRT file.", None, _get_empty_segments_html(), None, None, None, "None", gr.update(interactive=False)
 
     if state.video_info is None:
         state.video_info = {}
@@ -1406,7 +1462,7 @@ def step3b_import_translation_srt(srt_file, target_lang):
         f"Review below, then click 'Validate Translation ✅' to unlock Dubbing."
     )
 
-    return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation (Fitted)"
+    return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation (Fitted)", gr.update(interactive=True)
 
 def step5_save_translation(data, dubbing_text_source="Fitted Translation", translated_title="", translated_desc=""):
     rows = _dataframe_to_rows(data)
@@ -1443,7 +1499,7 @@ def step5_save_translation(data, dubbing_text_source="Fitted Translation", trans
             count += 1
             
     if count == 0:
-        return "⚠️ No translation data found.", gr.update(interactive=False), _get_empty_segments_html(), []
+        return "⚠️ No translation data found.", gr.update(interactive=False), _get_empty_segments_html(), [], gr.update(interactive=False)
         
     # Set active text based on source selection
     for seg in state.translated_segments:
@@ -1461,7 +1517,8 @@ def step5_save_translation(data, dubbing_text_source="Fitted Translation", trans
         f"✅ Translation validated ({count} segments). Go to the 'Dubbing & Export' tab.",
         gr.update(interactive=True),
         _get_segments_json_html(),
-        df_data
+        df_data,
+        gr.update(interactive=True)
     )
 
 def export_transcription_srt(df_data=None):
@@ -1600,7 +1657,7 @@ def ensure_vocals_and_reference_audio():
 
 def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Woman", dubbing_text_source="Fitted Translation", progress=gr.Progress()):
     if not state.translated_segments:
-        return "Error: No translation available.", None, None, None, None, [], _get_empty_segments_html()
+        return "Error: No translation available.", None, None, None, None, [], _get_empty_segments_html(), None, None, gr.update(interactive=False)
 
     try:
         # Set active text based on source selection
@@ -1730,7 +1787,7 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
         
         if state.video_info.get('is_audio_only', False):
             df_data = _build_dubbing_df_data(dubbing_text_source)
-            return status, gr.update(visible=False, value=None), mixed_audio, gr.update(visible=False, value=None), gr.update(visible=True, value=mixed_audio), df_data, _get_segments_json_html(), None, final_audio_export
+            return status, gr.update(visible=False, value=None), mixed_audio, gr.update(visible=False, value=None), gr.update(visible=True, value=mixed_audio), df_data, _get_segments_json_html(), None, final_audio_export, gr.update(interactive=True)
         else:
             progress(0.9, "Assembling final video...")
             final_video = os.path.join(OUTPUT_DIR, f"final_video_{iso}.mp4")
@@ -1740,13 +1797,13 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
                 final_video
             )
             df_data = _build_dubbing_df_data(dubbing_text_source)
-            return status, gr.update(visible=True, value=final_video), mixed_audio, gr.update(visible=True, value=final_video), gr.update(visible=False, value=None), df_data, _get_segments_json_html(), final_video, final_audio_export
+            return status, gr.update(visible=True, value=final_video), mixed_audio, gr.update(visible=True, value=final_video), gr.update(visible=False, value=None), df_data, _get_segments_json_html(), final_video, final_audio_export, gr.update(interactive=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
         if not state.keep_models:
             tts_engine.cleanup()
-        return f"❌ Synthesis failed: {str(e)}", gr.update(), None, gr.update(), gr.update(), gr.update(), gr.update(), None, None
+        return f"❌ Synthesis failed: {str(e)}", gr.update(), None, gr.update(), gr.update(), gr.update(), gr.update(), None, None, gr.update(interactive=False)
 
 
 def export_video():
@@ -4609,7 +4666,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                         btn_reset = gr.Button("🔄 New Project", variant="secondary", scale=1)
                     status_dl = gr.Textbox(label="Status", interactive=False)
                     with gr.Row(elem_classes=["zast-next-step-row"]):
-                        btn_next_tab1 = gr.Button("➡️ Continue to Transcription & SEO (Tab 2)", variant="primary", elem_classes=["zast-next-step-btn"])
+                        btn_next_tab1 = gr.Button("➡️ Continue to Transcription & SEO (Tab 2)", variant="primary", interactive=False, elem_classes=["zast-next-step-btn"])
                 
             with gr.Tab("2. 🎤 Transcription & SEO", id="tab_transcription") as tab2:
                 with gr.Accordion("💡 Quick Guide & Options Explained (Tab 2: Transcription & SEO)", open=False, elem_classes=["zast-tab-guide-accordion"]):
@@ -4665,6 +4722,17 @@ with gr.Blocks(title="ZastTranslate") as app:
                         )
                     with gr.Row():
                         btn_transcribe = gr.Button("▶️ Run Transcription", interactive=False, variant="primary", elem_id="btn_run_transcription")
+                    with gr.Row():
+                        whisper_only_cb = gr.Checkbox(
+                            label="🎙️ Whisper only (skip LLM translation — use fast NLLB)",
+                            value=False,
+                            info="Transcribe normally, but translate with the lightweight NLLB model instead of the heavy LLM. Saves VRAM and never loads the LLM for translation."
+                        )
+                        skip_seo_cb = gr.Checkbox(
+                            label="🚫 Skip YouTube SEO studio",
+                            value=False,
+                            info="Hide/disable the SEO & Metadata Studio below. Use this when you don't need YouTube SEO (e.g. offline use or you already have your own title/description)."
+                        )
 
                 with gr.Group(elem_classes=["zast-card"]):
                     gr.Markdown(f"### 📄 2. Subtitles Editor & SRT Import {zast_tooltip('Edit dialogue cues, clean conversational filler words, or import an external SRT.')} <span class='zast-pill zast-pill-info'>Interactive Grid</span>")
@@ -4694,7 +4762,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     )
                     export_transcription_file = gr.File(label="Subtitles ready for download", interactive=False, show_label=False)
 
-                with gr.Group(elem_classes=["zast-card"]):
+                with gr.Group(elem_classes=["zast-card"], elem_id="seo_studio_group") as seo_studio_group:
                     gr.Markdown(f"### 🚀 3. YouTube SEO & Metadata Studio (Original Video Optimization) {zast_tooltip('Generates high-CTR titles, live YouTube Suggest queries, full chapters (00:00 to end), and clean descriptions without AI asterisks.')} <span class='zast-pill zast-pill-purple'>🛡️ Humanizer Certified</span>")
                     gr.Markdown(
                         "> 🛡️ **Humanizer Anti-AI Charter (35 Wikipedia AI Cleanup Patterns):** Same human-grade writing engine as Tab 7 (Blog Studio). Zero AI clichés ('Swiss Army knife', 'dive into', 'game changer', 'without further ado'), zero markdown asterisks `**`, live YouTube search suggest queries, and full timeline chapter landmarks (00:00 to end)."
@@ -4721,7 +4789,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                         btn_apply_seo = gr.Button("📥 Apply as Original Video Metadata (Sync with Tabs 3 & 5)", variant="primary")
                     seo_status = gr.Markdown(value="")
                     with gr.Row(elem_classes=["zast-next-step-row"]):
-                        btn_next_tab2 = gr.Button("➡️ Continue to Translation (Tab 3)", variant="primary", elem_classes=["zast-next-step-btn"])
+                        btn_next_tab2 = gr.Button("➡️ Continue to Translation (Tab 3)", variant="primary", interactive=False, elem_classes=["zast-next-step-btn"])
         
             with gr.Tab("3. 🌍 Translation", id="tab_translation") as tab3:
                 with gr.Accordion("💡 Quick Guide & Options Explained (Tab 3: Translation)", open=False, elem_classes=["zast-tab-guide-accordion"]):
@@ -4750,6 +4818,11 @@ with gr.Blocks(title="ZastTranslate") as app:
                         btn_translate = gr.Button("▶️ Run Translation", interactive=False, variant="primary", elem_id="btn_run_translation")
                         translation_srt_input = gr.File(label="…or import an already-translated SRT (skips the LLM)", file_types=[".srt"], elem_id="translation_srt_input", scale=2)
                         btn_import_translation = gr.Button("📥 Import Translated SRT", variant="secondary", elem_id="btn_import_translation_srt", scale=1)
+                    disable_fitted_cb = gr.Checkbox(
+                        label="⏭️ Disable fitted translation (natural full translation only)",
+                        value=False,
+                        info="Skip the time-constrained 'fitted' pass and its reformulation. Produces one natural, unconstrained translation used for both columns. Faster, but lines may overflow the original timing during dubbing."
+                    )
                     translation_status = gr.Textbox(label="Status", interactive=False)
                     translation_df = gr.Dataframe(
                         headers=["Start", "End", "Original", "Translation", "Fitted"],
@@ -4772,7 +4845,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                     )
                     export_translation_file = gr.File(label="Translated subtitles ready for download", interactive=False, show_label=False)
                     with gr.Row(elem_classes=["zast-next-step-row"]):
-                        btn_next_tab3 = gr.Button("➡️ Continue to Dubbing & Export (Tab 4)", variant="primary", elem_classes=["zast-next-step-btn"])
+                        btn_next_tab3 = gr.Button("➡️ Continue to Dubbing & Export (Tab 4)", variant="primary", interactive=False, elem_classes=["zast-next-step-btn"])
                 
             with gr.Tab("4. 🎬 Dubbing & Export", id="tab_dubbing") as tab4:
                 with gr.Accordion("💡 Quick Guide & Options Explained (Tab 4: Dubbing & Export)", open=False, elem_classes=["zast-tab-guide-accordion"]):
@@ -5845,7 +5918,7 @@ with gr.Blocks(title="ZastTranslate") as app:
 
     # EVENTS
     btn_check.click(step0_check_url, [url_input], [status_dl, yt_resolution, btn_dl])
-    btn_dl.click(step1_download, [url_input, file_input, yt_resolution, local_title_input], [status_dl, video_preview, audio_preview, btn_transcribe, btn_import_metadata, bulk_output_type, final_video_out, btn_import_metadata_single], show_progress="full", js=JS_DOWNLOAD_WAIT)
+    btn_dl.click(step1_download, [url_input, file_input, yt_resolution, local_title_input], [status_dl, video_preview, audio_preview, btn_transcribe, btn_import_metadata, bulk_output_type, final_video_out, btn_import_metadata_single, btn_next_tab1], show_progress="full", js=JS_DOWNLOAD_WAIT)
     btn_reset.click(
         reset_project,
         [],
@@ -5856,7 +5929,8 @@ with gr.Blocks(title="ZastTranslate") as app:
             bulk_output_type, final_video_out, segments_json_holder, dubbing_segments_df,
             original_title_input, original_desc_input, translated_title_input, translated_desc_input,
             btn_import_metadata_single,
-            seo_title_out, seo_tags_out, seo_chapters_out, seo_desc_out, seo_status
+            seo_title_out, seo_tags_out, seo_chapters_out, seo_desc_out, seo_status,
+            btn_next_tab1, btn_next_tab2, btn_next_tab3, btn_next_tab4_to_shorts
         ]
     )
     
@@ -5974,10 +6048,10 @@ with gr.Blocks(title="ZastTranslate") as app:
     btn_custom_llm_use.click(on_custom_llm_use, inputs=[custom_llm_path], outputs=[custom_llm_status])
     btn_llama_server_use.click(on_llama_server_use, inputs=[llama_server_url], outputs=[llama_server_status])
 
-    btn_transcribe.click(step2_transcribe, [lang_source, model_size], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full")
-    btn_import_srt.click(step2b_import_srt, [srt_file_input, lang_source], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection], show_progress="full", js=JS_SRT_WAIT)
+    btn_transcribe.click(step2_transcribe, [lang_source, model_size], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection, btn_next_tab2], show_progress="full")
+    btn_import_srt.click(step2b_import_srt, [srt_file_input, lang_source], [transcription_status, transcription_df, segments_json_holder, export_transcription_file, subtitle_selection, btn_next_tab2], show_progress="full", js=JS_SRT_WAIT)
     
-    btn_valid_transcription.click(step3_save_transcription, [transcription_df], [transcription_status, btn_translate, btn_bulk_run, segments_json_holder, export_transcription_file])
+    btn_valid_transcription.click(step3_save_transcription, [transcription_df], [transcription_status, btn_translate, btn_bulk_run, segments_json_holder, export_transcription_file, btn_next_tab2])
     btn_clean_transcription.click(step2_clean_transcription, [transcription_df, lang_source], [transcription_status, transcription_df, segments_json_holder, export_transcription_file], show_progress="full")
     btn_export_transcription.click(export_transcription_srt, [transcription_df], [transcription_status, export_transcription_file])
     btn_open_output_tab2.click(open_output_folder, [], [])
@@ -5999,19 +6073,29 @@ with gr.Blocks(title="ZastTranslate") as app:
         [seo_title_out, seo_desc_out],
         [original_title_input, original_desc_input, bulk_title_input, bulk_desc_input, seo_status]
     )
+
+    # Skip-SEO toggle: hide the whole SEO & Metadata Studio when checked.
+    def on_skip_seo_change(skip):
+        return gr.update(visible=not bool(skip))
+
+    skip_seo_cb.change(
+        on_skip_seo_change,
+        [skip_seo_cb],
+        [seo_studio_group]
+    )
     
     btn_import_metadata_single.click(import_metadata_from_state, [], [original_title_input, original_desc_input])
     
     btn_translate.click(
         step4_translate,
-        [lang_target, original_title_input, original_desc_input],
-        [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection],
+        [lang_target, original_title_input, original_desc_input, whisper_only_cb, disable_fitted_cb],
+        [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection, btn_next_tab3],
         show_progress="full"
     )
     btn_import_translation.click(
         step3b_import_translation_srt,
         [translation_srt_input, lang_target],
-        [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection],
+        [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection, btn_next_tab3],
         show_progress="full",
         js=JS_TRANSLATION_SRT_WAIT
     )
@@ -6019,7 +6103,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     btn_valid_translation.click(
         step5_save_translation,
         [translation_df, dubbing_text_source, translated_title_input, translated_desc_input],
-        [translation_status, btn_synth, segments_json_holder, dubbing_segments_df]
+        [translation_status, btn_synth, segments_json_holder, dubbing_segments_df, btn_next_tab3]
     )
     btn_export_translation.click(export_translation_srt, [translation_df], [translation_status, export_translation_file])
     btn_export_fitted.click(export_fitted_srt, [translation_df], [translation_status, export_translation_file])
@@ -6138,7 +6222,8 @@ with gr.Blocks(title="ZastTranslate") as app:
         [voice_mode, voice_file, never_cut_mode, default_voice_gender, dubbing_text_source], 
         [
             synth_status, final_video_out, final_audio_out, video_preview, audio_preview,
-            dubbing_segments_df, segments_json_holder, export_video_file, export_audio_file
+            dubbing_segments_df, segments_json_holder, export_video_file, export_audio_file,
+            btn_next_tab4_to_shorts
         ],
         show_progress="full"
     )
@@ -6780,7 +6865,9 @@ with gr.Blocks(title="ZastTranslate") as app:
                 [], _get_empty_segments_html(),
                 [], [],
                 "", "", "", "",
-                "None", "", None
+                "None", "", None,
+                gr.update(interactive=False), gr.update(interactive=False),
+                gr.update(interactive=False), gr.update(interactive=False)
             )
             
         has_segments = len(state.segments) > 0
@@ -6850,6 +6937,11 @@ with gr.Blocks(title="ZastTranslate") as app:
             gr.update(interactive=True),  # btn_translate (segments exist here)
             gr.update(interactive=has_translated),  # btn_synth
             gr.update(interactive=True),  # btn_bulk_run (segments exist here)
+            # Step gating: Continue buttons only light up for completed steps.
+            gr.update(interactive=True),   # btn_next_tab1 (video loaded here)
+            gr.update(interactive=has_segments),     # btn_next_tab2 (needs transcription)
+            gr.update(interactive=has_translated),   # btn_next_tab3 (needs translation)
+            gr.update(interactive=has_translated),   # btn_next_tab4_to_shorts (needs translation)
             # transcription_df, segments_json_holder
             trans_update,
             _get_segments_json_html() if (has_segments or has_translated) else _get_empty_segments_html(),
@@ -6872,6 +6964,7 @@ with gr.Blocks(title="ZastTranslate") as app:
             has_video = state.video_info is not None
             has_segments = len(state.segments) > 0 if state.segments else False
             has_translated = len(state.translated_segments) > 0 if state.translated_segments else False
+            has_synced = len(state.synced_segments) > 0 if state.synced_segments else False
             return (
                 gr.update(interactive=has_video),      # btn_transcribe
                 # Translate unlocks on EITHER validated segments OR a fresh
@@ -6880,16 +6973,23 @@ with gr.Blocks(title="ZastTranslate") as app:
                 # step4_translate would succeed from state.segments.
                 gr.update(interactive=(has_segments or has_video)),   # btn_translate
                 gr.update(interactive=has_translated), # btn_synth
-                gr.update(interactive=(has_segments or has_video))    # btn_bulk_run
+                gr.update(interactive=(has_segments or has_video)),   # btn_bulk_run
+                # Step gating for the "Continue to next step" buttons: each is only
+                # clickable once its prerequisite step has produced data.
+                gr.update(interactive=has_video),        # btn_next_tab1 (needs imported video)
+                gr.update(interactive=has_segments),     # btn_next_tab2 (needs transcription)
+                gr.update(interactive=has_translated),   # btn_next_tab3 (needs translation)
+                gr.update(interactive=(has_synced or has_translated))  # btn_next_tab4_to_shorts
             )
         except Exception:
-            return gr.update(), gr.update(), gr.update(), gr.update()
-        
+            return [gr.update() for _ in range(8)]
+
     for tab in [tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_help, tab_cps]:
         tab.select(
             fn=on_tab_select,
             inputs=[],
-            outputs=[btn_transcribe, btn_translate, btn_synth, btn_bulk_run]
+            outputs=[btn_transcribe, btn_translate, btn_synth, btn_bulk_run,
+                     btn_next_tab1, btn_next_tab2, btn_next_tab3, btn_next_tab4_to_shorts]
         )
 
     # Workflow Next-Step Action Navigation Handlers (Fail-Safe: auto-saves state & unlocks next step even if user didn't click manual validate)
@@ -6902,13 +7002,13 @@ with gr.Blocks(title="ZastTranslate") as app:
     btn_next_tab2.click(
         step3_save_transcription,
         [transcription_df],
-        [transcription_status, btn_translate, btn_bulk_run, segments_json_holder, export_transcription_file],
+        [transcription_status, btn_translate, btn_bulk_run, segments_json_holder, export_transcription_file, btn_next_tab2],
         js="() => { window.zastSwitchTab('3.'); }"
     )
     btn_next_tab3.click(
         step5_save_translation,
         [translation_df, dubbing_text_source, translated_title_input, translated_desc_input],
-        [translation_status, btn_synth, segments_json_holder, dubbing_segments_df],
+        [translation_status, btn_synth, segments_json_holder, dubbing_segments_df, btn_next_tab3],
         js="() => { window.zastSwitchTab('4.'); }"
     )
     btn_next_tab4_to_shorts.click(
@@ -6958,7 +7058,8 @@ with gr.Blocks(title="ZastTranslate") as app:
             transcription_df, segments_json_holder,
             translation_df, dubbing_segments_df,
             original_title_input, original_desc_input, translated_title_input, translated_desc_input,
-            subtitle_selection, transcription_status, export_transcription_file
+            subtitle_selection, transcription_status, export_transcription_file,
+            btn_next_tab1, btn_next_tab2, btn_next_tab3, btn_next_tab4_to_shorts
         ]
     )
 

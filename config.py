@@ -25,9 +25,12 @@ TEMP_DIR = os.path.join(BASE_DIR, "temp")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 VOICES_DIR = os.path.join(BASE_DIR, "voices")
+# Persistent YouTube download cache. Unlike TEMP_DIR (wiped on "New Project"),
+# files here survive restarts so re-importing the same URL skips the download.
+DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 
 # Creer les dossiers s'ils n'existent pas
-for d in [TEMP_DIR, OUTPUT_DIR, MODELS_DIR, VOICES_DIR]:
+for d in [TEMP_DIR, OUTPUT_DIR, MODELS_DIR, VOICES_DIR, DOWNLOADS_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # GPU/CPU

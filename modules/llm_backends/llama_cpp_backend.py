@@ -128,15 +128,46 @@ class LlamaCppBackend(LLMBackend):
         do_sample = kwargs.get("do_sample", True)
         temp = temperature if do_sample else 0.0
         
-        response = self.model.create_chat_completion(
-            messages=messages,
-            max_tokens=max_new_tokens,
-            temperature=temp,
-            repeat_penalty=kwargs.get("repetition_penalty", 1.05),
-        )
+        # Hybrid reasoning models (e.g. Qwen3-based) spend the ENTIRE token budget on
+        # their internal "thinking" and never emit the actual `content` answer unless
+        # thinking is disabled. Dubbing needs the plain translation, so disable it.
+        # `chat_template_kwargs` is only accepted by newer llama-cpp-python builds; fall
+        # back gracefully for older ones (and to a bigger budget if content still empty).
+        ct_kwargs = {"enable_thinking": False}
+        try:
+            response = self.model.create_chat_completion(
+                messages=messages,
+                max_tokens=max_new_tokens,
+                temperature=temp,
+                repeat_penalty=kwargs.get("repetition_penalty", 1.05),
+                chat_template_kwargs=ct_kwargs,
+            )
+        except (TypeError, ValueError):
+            # This build predates chat_template_kwargs support.
+            response = self.model.create_chat_completion(
+                messages=messages,
+                max_tokens=max_new_tokens,
+                temperature=temp,
+                repeat_penalty=kwargs.get("repetition_penalty", 1.05),
+            )
         
-        choice = response["choices"][0]["message"]["content"]
-        return choice if choice is not None else ""
+        choice = response["choices"][0]["message"].get("content")
+        choice = choice if choice is not None else ""
+        # Defensive: if the build ignored the kwarg and burned the budget on reasoning,
+        # retry once with a much larger budget so the model can finish thinking + answer.
+        if not choice and not multiline:
+            reasoning = response["choices"][0]["message"].get("reasoning_content")
+            if reasoning and str(reasoning).strip():
+                bigger = max(int(max_new_tokens) * 6, int(max_new_tokens) + 512)
+                response = self.model.create_chat_completion(
+                    messages=messages,
+                    max_tokens=bigger,
+                    temperature=temp,
+                    repeat_penalty=kwargs.get("repetition_penalty", 1.05),
+                )
+                choice = response["choices"][0]["message"].get("content")
+                choice = choice if choice is not None else ""
+        return choice
 
     def generate_batch(self, messages_list: list, max_new_tokens_list: list, **kwargs) -> list:
         """
