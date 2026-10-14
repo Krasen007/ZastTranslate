@@ -1,8 +1,11 @@
 import os
 import json
 import gc
+import ipaddress
+import socket
 import urllib.request
 import urllib.error
+import urllib.parse
 import torch
 from .base import LLMBackend
 from config import DEVICE
@@ -104,11 +107,20 @@ class LlamaServerBackend(LLMBackend):
         url = f"{self.base_url}{path}"
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         last_error = None
+        retries = max(1, retries)
+        parsed_url = urllib.parse.urlsplit(url)
+        hostname = (parsed_url.hostname or "").lower()
+        is_loopback = hostname == "localhost"
+        if hostname and not is_loopback:
+            try:
+                is_loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                pass
         for attempt in range(1, retries + 1):
             req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
             req.add_header("Content-Type", "application/json")
             api_key = os.environ.get("LLAMA_SERVER_API_KEY", "")
-            if api_key:
+            if api_key and (parsed_url.scheme == "https" or is_loopback):
                 req.add_header("Authorization", f"Bearer {api_key}")
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -125,8 +137,18 @@ class LlamaServerBackend(LLMBackend):
                     raise RuntimeError(f"llama-server HTTP {e.code} at {url}: {detail or e.reason}") from e
                 last_error = RuntimeError(f"llama-server HTTP {e.code} at {url}: {detail or e.reason}")
             except urllib.error.URLError as e:
+                if path.endswith("/chat/completions") and isinstance(e.reason, (TimeoutError, socket.timeout)):
+                    raise RuntimeError(
+                        f"llama-server chat request timed out at {url}; the request may be slow or timed out."
+                    ) from e
                 last_error = RuntimeError(self._unreachable_msg(e.reason))
                 break  # server down / DNS: retrying won't help within one call
+            except (TimeoutError, socket.timeout) as e:
+                if path.endswith("/chat/completions"):
+                    raise RuntimeError(
+                        f"llama-server chat request timed out at {url}; the request may be slow or timed out."
+                    ) from e
+                last_error = RuntimeError(self._unreachable_msg(e))
             except (ConnectionError, TimeoutError, OSError) as e:
                 # Covers http.client.RemoteDisconnected and friends, which are NOT
                 # wrapped in URLError — a stopped/wrong-port server must still produce
@@ -236,4 +258,3 @@ class LlamaServerBackend(LLMBackend):
             self.generate(msgs, max_new_tokens=mnt, **kwargs)
             for msgs, mnt in zip(messages_list, max_new_tokens_list)
         ]
-

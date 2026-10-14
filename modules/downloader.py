@@ -15,7 +15,7 @@ else:
     print("[yt-dlp] WARNING: No JS runtime (node/deno) found in PATH. Some YouTube formats may be unavailable.")
 
 
-def _ydl_base_opts(allow_remote_components: bool = True) -> dict:
+def _ydl_base_opts(allow_remote_components: bool = False) -> dict:
     """Common yt-dlp options with automatic JS runtime injection.
 
     YouTube's n-challenge needs a JS runtime (node/deno) plus yt-dlp's remote
@@ -34,7 +34,10 @@ def _ydl_base_opts(allow_remote_components: bool = True) -> dict:
     return opts
 
 
-_ALLOW_REMOTE_EJS = os.environ.get("ZAST_NO_REMOTE_EJS", "") != "1"
+_ALLOW_REMOTE_EJS = (
+    os.environ.get("ZAST_ALLOW_REMOTE_EJS", "") == "1"
+    and os.environ.get("ZAST_NO_REMOTE_EJS", "") != "1"
+)
 
 
 class VideoDownloader:
@@ -49,7 +52,8 @@ class VideoDownloader:
         """
         Fetch video info without downloading.
         Returns {"title": str, "duration": float, "resolutions": list[str]}
-        Set ZAST_NO_REMOTE_EJS=1 to disable yt-dlp's remote EJS solver.
+        Set ZAST_ALLOW_REMOTE_EJS=1 to enable yt-dlp's remote EJS solver.
+        Set ZAST_NO_REMOTE_EJS=1 to disable it even when explicitly enabled.
         """
         ydl_opts = {
             **VideoDownloader._base_opts(),

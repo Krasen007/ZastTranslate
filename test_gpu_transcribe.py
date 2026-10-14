@@ -7,6 +7,14 @@ modules/transcriber.py fixes
 "RuntimeError: Library cublas64_12.dll is not found or cannot be loaded".
 """
 import sys
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import time
 
 sys.path.insert(0, r"F:\AI\repos\ZastTranslate")

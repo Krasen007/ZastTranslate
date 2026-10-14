@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 try:
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -40,23 +41,9 @@ class YouTubePublisher:
             try:
                 # JSON token (preferred, written by _save_credentials below).
                 self.credentials = _OAuthCredentials.from_authorized_user_file(self.token_file, SCOPES)
-            except Exception:
+            except Exception as e:
+                print(f"[YouTube] Could not load JSON token ({e}); re-authenticating.")
                 self.credentials = None
-            if self.credentials is None:
-                # Legacy pickle token (pre-review versions): load defensively,
-                # verify the type, then immediately migrate to JSON.
-                import pickle as _pickle
-                try:
-                    with open(self.token_file, 'rb') as token:
-                        legacy = _pickle.load(token)
-                    if isinstance(legacy, _OAuthCredentials):
-                        self.credentials = legacy
-                    else:
-                        print(f"[YouTube] Ignoring unexpected token content in {self.token_file}; re-authenticating.")
-                        self.credentials = None
-                except Exception as e:
-                    print(f"[YouTube] Could not load legacy token ({e}); re-authenticating.")
-                    self.credentials = None
 
         if not self.credentials or not self.credentials.valid:
             if self.credentials and self.credentials.expired and self.credentials.refresh_token:
@@ -72,12 +59,19 @@ class YouTubePublisher:
 
     def _save_credentials(self):
         """Persist OAuth credentials as JSON with owner-only permissions."""
-        with open(self.token_file, 'w', encoding='utf-8') as token:
-            token.write(self.credentials.to_json())
+        token_dir = os.path.dirname(os.path.abspath(self.token_file))
+        fd, temp_path = tempfile.mkstemp(prefix=".token-", suffix=".tmp", dir=token_dir)
         try:
-            os.chmod(self.token_file, 0o600)
-        except (OSError, NotImplementedError):
-            pass  # Windows ACLs / exotic FS: best effort only
+            with os.fdopen(fd, 'w', encoding='utf-8') as token:
+                token.write(self.credentials.to_json())
+                token.flush()
+                os.fsync(token.fileno())
+            os.replace(temp_path, self.token_file)
+        finally:
+            try:
+                os.remove(temp_path)
+            except FileNotFoundError:
+                pass
 
     def update_metadata(self, video_id, localizations):
         """

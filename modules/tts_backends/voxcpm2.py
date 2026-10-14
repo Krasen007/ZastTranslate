@@ -201,10 +201,10 @@ class VoxCPM2Backend(TTSBackend):
             if lang_key not in _VOXCpm_DEFAULT_PROMPTS:
                 lang_key = "default"
             gender_word = _VOXCpm_GENDER_WORDS.get(lang_key, _VOXCpm_GENDER_WORDS["default"])[gender_key]
-            default_wav = os.path.join(voices_dir, f"default_{gender_str}.wav")
+            default_wav = os.path.join(voices_dir, f"default_{lang_key}_{gender_str}.wav")
 
             if not os.path.exists(default_wav):
-                print(f"VoxCPM 2: Generating a persistent default voice (default_{gender_str}.wav) to ensure consistency...")
+                print(f"VoxCPM 2: Generating a persistent default voice (default_{lang_key}_{gender_str}.wav) to ensure consistency...")
                 prompt = _VOXCpm_DEFAULT_PROMPTS[lang_key].format(gender=gender_word)
                 wav = self.model.generate(
                     text=prompt,
@@ -262,4 +262,3 @@ class VoxCPM2Backend(TTSBackend):
             "path": output_path,
             "sample_rate": sr
         }
-

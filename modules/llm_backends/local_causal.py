@@ -154,50 +154,47 @@ class LocalCausalLMBackend(LLMBackend):
         padded_len = model_inputs.input_ids.shape[1]
 
         do_sample = kwargs.get("do_sample", False)
+        token_limits = list(max_new_tokens_list)
         gen_kwargs = {
-            # Hard cap; per-row budgets are enforced by _RowTokenBudget below so a
-            # short cue no longer waits for the longest cue's whole budget.
-            "max_new_tokens": max(max_new_tokens_list),
+            # A hard cap, with each row's actual limit enforced by its logits processor.
+            "max_new_tokens": max(token_limits),
             "do_sample": do_sample,
             "repetition_penalty": kwargs.get("repetition_penalty", 1.0),
         }
         if do_sample:
             gen_kwargs["temperature"] = kwargs.get("temperature", 0.7)
 
-        # Per-row token budgets: once a row has produced its own max_new_tokens,
-        # force EOS for that row. HF generate then pads it while other rows continue.
-        from transformers import StoppingCriteria, StoppingCriteriaList
+        # Constrain a row's next token at its limit; stopping criteria run too late
+        # to modify the scores used for sampling.
+        from transformers import LogitsProcessor, LogitsProcessorList
 
-        class _RowTokenBudget(StoppingCriteria):
+        class _RowTokenBudget(LogitsProcessor):
             def __init__(self, prompt_len, limits, pad_id, eos_id):
                 self.prompt_len = prompt_len
                 self.limits = limits
-                self.pad_id = pad_id if pad_id is not None else eos_id
-                self.eos_id = eos_id if eos_id is not None else pad_id
-                self.hit = [False] * len(limits)
+                self.stop_id = eos_id if eos_id is not None else pad_id
 
-            def __call__(self, input_ids, scores, **kwargs):
+            def __call__(self, input_ids, scores):
                 produced = input_ids.shape[1] - self.prompt_len
                 for i, limit in enumerate(self.limits):
-                    if not self.hit[i] and produced >= limit:
-                        self.hit[i] = True
-                        tok = self.eos_id if self.eos_id is not None else self.pad_id
-                        if tok is not None and 0 <= tok < scores.shape[-1]:
-                            forced = torch.full_like(scores[i], float("-inf"))
-                            forced[tok] = 0.0
-                            scores[i] = forced
-                return all(self.hit)
+                    if produced >= limit and self.stop_id is not None and 0 <= self.stop_id < scores.shape[-1]:
+                        scores[i].fill_(float("-inf"))
+                        scores[i, self.stop_id] = 0.0
+                return scores
 
         eos_id = self.tokenizer.eos_token_id
-        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([
-            _RowTokenBudget(padded_len, list(max_new_tokens_list), self.tokenizer.pad_token_id, eos_id)
+        gen_kwargs["logits_processor"] = LogitsProcessorList([
+            _RowTokenBudget(padded_len, token_limits, self.tokenizer.pad_token_id, eos_id)
         ])
 
         with torch.no_grad():
             generated_ids = self.model.generate(**model_inputs, **gen_kwargs)
 
         # Extract only new tokens (after the left-padded prompt length)
-        new_ids = [generated_ids[i][padded_len:] for i in range(len(texts))]
+        new_ids = [
+            generated_ids[i][padded_len:padded_len + token_limits[i]]
+            for i in range(len(texts))
+        ]
         responses = self.tokenizer.batch_decode(new_ids, skip_special_tokens=True)
 
         self.tokenizer.padding_side = prev_padding_side

@@ -5,8 +5,16 @@ Phase 2 (dubbed BG via the Edge-TTS BG backend) of the implementation plan.
 Run with:  python test_bg_audit.py
 """
 
-import os
 import sys
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -247,4 +255,3 @@ if __name__ == "__main__":
         sys.exit(1)
     print(f"[OK] All {len(TESTS)} Bulgarian audit checks passed!")
     sys.exit(0)
-

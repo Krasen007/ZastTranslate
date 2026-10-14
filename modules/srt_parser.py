@@ -229,10 +229,14 @@ class SRTParser:
         errors = []
         ordered = sorted(segments, key=lambda s: (s.get("start", 0), s.get("end", 0)))
         for i, seg in enumerate(ordered):
+            cue_index = seg.get("index", i + 1)
             if seg["end"] <= seg["start"]:
-                errors.append(f"Segment {i+1}: invalid duration ({seg['start']} -> {seg['end']})")
-            if i > 0 and seg["start"] < ordered[i-1]["end"]:
-                errors.append(f"Segment {i+1}: overlaps with segment {i}")
+                errors.append(f"Segment {cue_index}: invalid duration ({seg['start']} -> {seg['end']})")
+            if i > 0 and seg["start"] < largest_end:
+                errors.append(f"Segment {cue_index}: overlaps with segment {largest_end_index}")
+            if i == 0 or seg["end"] > largest_end:
+                largest_end = seg["end"]
+                largest_end_index = cue_index
         return errors
 
     def convert_user_srt_to_segments(self, srt_path):

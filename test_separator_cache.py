@@ -3,7 +3,16 @@
 Confirms that re-running separation on an already-processed track reuses the
 existing stems (skips demucs entirely) instead of re-separating each time.
 """
-import sys, os, time
+import sys
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+import os, time
 
 sys.path.insert(0, r"F:\AI\repos\ZastTranslate")
 

@@ -1,3 +1,12 @@
+import sys
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import torch
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers import AutoConfig

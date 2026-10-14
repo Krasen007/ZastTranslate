@@ -665,7 +665,7 @@ class TimeSync:
                 )
                 # Write remainder by summing (never cut the faded tail below)
                 if audio_len > xfade_len:
-                    full_audio[start_sample + xfade_len:end_sample] += audio[xfade_len:audio_len]
+                    full_audio[start_sample + xfade_len:end_sample] = audio[xfade_len:audio_len]
             else:
                 # No significant overlap — sum instead of overwriting so the tail of
                 # the previous segment is never cut (prevents clicks/cut phonemes).

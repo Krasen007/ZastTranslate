@@ -67,7 +67,7 @@ def load_user_cps() -> dict:
             for k, v in data.items():
                 try:
                     cps = float(v)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     print(f"[CPS] Ignoring invalid override {k!r}={v!r} (not a number).")
                     continue
                 if not (0.5 <= cps <= 30.0):

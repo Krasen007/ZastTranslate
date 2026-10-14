@@ -58,7 +58,7 @@ class AudioMixer:
         import shutil
         shutil.copy2(mixed_path, wav_path)
 
-        tmp_mp3 = mp3_path + ".tmp"
+        tmp_mp3 = mp3_path + ".tmp.mp3"
         cmd = [
             'ffmpeg', '-y', '-i', mixed_path,
             '-b:a', '320k',

@@ -3959,15 +3959,13 @@ button[aria-label="Copy"]:active, button[title="Copy"]:active {
     transform: translateY(0) !important;
 }
 
-#js_debug_log {
-    display: none !important;
-}
 /* Ensure clean dropzone styling */
 [data-testid="dropzone"] {
     border-color: rgba(99, 102, 241, 0.4) !important;
     background: rgba(30, 41, 59, 0.6) !important;
 }
 """
+_ZAST_DEBUG = os.environ.get("ZAST_DEBUG") == "1"
 BLOCKS_JS = """
 (() => {
     // Client-side Tab Switcher with smooth scroll
@@ -4073,27 +4071,11 @@ BLOCKS_JS = """
     } else {
         initFloatingTooltips();
     }
-    const debugLog = (msg) => {
-        console.log("[ZastDebug] " + msg);
-        window.zast_logs = window.zast_logs || [];
-        window.zast_logs.push(new Date().toLocaleTimeString() + ": " + msg);
-        const logEl = document.querySelector("#js_debug_log");
-        if (logEl) {
-            logEl.innerHTML = "[JS Debug Log Started]<br/>" + window.zast_logs.join("<br/>");
-            logEl.scrollTop = logEl.scrollHeight;
-        }
-    };
-
-    debugLog("Initializing JS Blocks...");
+    __ZAST_DEBUG_LOGGER__
     try {
         document.documentElement.classList.add("dark");
         document.body.classList.add("dark");
     } catch(e) {}
-
-    window.onerror = function(message, source, lineno, colno, error) {
-        debugLog("GLOBAL ERROR: " + message + " at " + source + ":" + lineno);
-        return false;
-    };
 
     // --- PREVIEW PANEL TOGGLE LOGIC ---
     window.setZastPreviewCollapsed = function(collapsed) {
@@ -4174,10 +4156,7 @@ BLOCKS_JS = """
         restoreSavedPreviewState();
         const player = document.querySelector("#video_player video") || document.querySelector("video") || document.querySelector("#audio_player audio") || document.querySelector("audio");
         
-        const logEl = document.querySelector("#js_debug_log");
-        if (logEl && window.zast_logs && window.zast_logs.length > 0) {
-            logEl.innerHTML = "[JS Debug Log Started]<br/>" + window.zast_logs.join("<br/>");
-        }
+        __ZAST_DEBUG_LOG_POLL__
 
         if (player) {
             const updateSubtitles = () => {
@@ -4411,6 +4390,43 @@ BLOCKS_JS = """
     });
 })();
 """
+if _ZAST_DEBUG:
+    _DEBUG_LOGGER_JS = """
+    const debugLog = (msg) => {
+        console.log("[ZastDebug] " + msg);
+        window.zast_logs = window.zast_logs || [];
+        window.zast_logs.push(new Date().toLocaleTimeString() + ": " + msg);
+        const logEl = document.querySelector("#js_debug_log");
+        if (logEl) {
+            logEl.innerHTML = "[JS Debug Log Started]<br/>" + window.zast_logs.join("<br/>");
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+    };
+    debugLog("Initializing JS Blocks...");
+    window.onerror = function(message, source, lineno, colno, error) {
+        debugLog("GLOBAL ERROR: " + message + " at " + source + ":" + lineno);
+        return false;
+    };
+"""
+    _DEBUG_LOG_POLL_JS = """
+        const logEl = document.querySelector("#js_debug_log");
+        if (logEl && window.zast_logs && window.zast_logs.length > 0) {
+            logEl.innerHTML = "[JS Debug Log Started]<br/>" + window.zast_logs.join("<br/>");
+        }
+"""
+    _DEBUG_LOG_HTML = (
+        "<div id='js_debug_log' style='max-height: 120px; overflow-y: auto;'>"
+        "[JS Debug Log Started]</div>"
+    )
+else:
+    _DEBUG_LOGGER_JS = "const debugLog = () => {};"
+    _DEBUG_LOG_POLL_JS = ""
+    _DEBUG_LOG_HTML = ""
+
+BLOCKS_JS = BLOCKS_JS.replace("__ZAST_DEBUG_LOGGER__", _DEBUG_LOGGER_JS)
+BLOCKS_JS = BLOCKS_JS.replace("__ZAST_DEBUG_LOG_POLL__", _DEBUG_LOG_POLL_JS)
+if not _ZAST_DEBUG:
+    BLOCKS_JS = re.sub(r"(?m)^[ \t]*debugLog\(.*\);\s*$", "", BLOCKS_JS)
 
 def _get_tab_guide_html(tab_num: int) -> str:
     guides = {
@@ -4616,9 +4632,9 @@ with gr.Blocks(title="ZastTranslate") as app:
             # Styled subtitle overlay box and debug log
             # Styled subtitle overlay box (debug log hidden in production)
             subtitle_overlay = gr.HTML(
-                value="""
+                value=f"""
                 <div style='text-align: center; font-size: 1.25em; padding: 12px; background: rgba(0,0,0,0.75); color: #00ffcc; border-radius: 6px; font-weight: bold; text-shadow: 1px 1px 2px black; display: none;' id='subtitle_overlay'></div>
-                <div id='js_debug_log' style='display: none !important;'>[JS Debug Log Started]</div>
+                {_DEBUG_LOG_HTML}
                 """,
                 elem_id="subtitle_overlay_container"
             )

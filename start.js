@@ -14,19 +14,6 @@ module.exports = {
                 path: "modules/__pycache__"
             }
         },
-        // Auto-update yt-dlp (YouTube changes its API frequently — keeps downloads working)
-        {
-            method: "shell.run",
-            params: {
-                venv: "env",
-                path: ".",
-                env: {
-                    "UV_NATIVE_TLS": "true",
-                    "UV_SYSTEM_CERTS": "true",
-                },
-                message: ["uv pip install -U yt-dlp || echo yt-dlp update skipped"]
-            }
-        },
         // Launch app with no bytecode caching
         {
             method: "shell.run",

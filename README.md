@@ -92,7 +92,7 @@ Each of the 8 tabs in ZastTranslate includes a built-in, collapsible header: `�
 
 Load your video from one of two sources:
 
-- **YouTube URL** — Paste any YouTube link. The video is downloaded automatically in true **1080p / 4K** with automatic JavaScript challenge solving (`remote_components: ejs:github`), Node.js runtime, and format sorting.
+- **YouTube URL** — Paste any YouTube link. The video is downloaded automatically in true **1080p / 4K** with Node.js runtime and format sorting. Remote EJS solver downloads are disabled by default; set `ZAST_ALLOW_REMOTE_EJS=1` before launching to enable them (some YouTube formats may otherwise be unavailable).
 - **Local file** — Upload a video from your computer. Supported formats: **MP4, MKV, AVI, MOV, WebM**.
 
 ![Import tab](tuto1.jpg)

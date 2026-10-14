@@ -232,7 +232,7 @@ class BgTTSBackend(TTSBackend):
         for i, chunk in enumerate(chunks):
             per_chunk = MAX_NEW_TOKENS
             if slot_budget is not None and len(chunks) > 0:
-                per_chunk = max(64, min(MAX_NEW_TOKENS, slot_budget // len(chunks)))
+                per_chunk = max(64, min(MAX_NEW_TOKENS, slot_budget))
             codes = _gen(
                 self.model, self._tokenizer, chunk, speaker_emb,
                 per_chunk, TEMPERATURE, TOP_K, TOP_P, REP_PENALTY, self.device,

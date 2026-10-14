@@ -154,7 +154,7 @@ class EdgeBulgarianBackend(TTSBackend):
                 data, sr = samples, seg.frame_rate
             except Exception:
                 import subprocess
-                tmp_out = output_path + ".tmp"
+                tmp_out = output_path + ".tmp.wav"
                 try:
                     subprocess.run(
                         ["ffmpeg", "-y", "-v", "error", "-i", src_path, tmp_out],
@@ -173,7 +173,7 @@ class EdgeBulgarianBackend(TTSBackend):
         if data.ndim > 1:
             data = data.mean(axis=1)
 
-        tmp_out = output_path + ".tmp"
+        tmp_out = output_path + ".tmp.wav"
         sf.write(tmp_out, data.astype(np.float32), sr)
         os.replace(tmp_out, output_path)
         return sr, len(data)
@@ -229,4 +229,3 @@ class EdgeBulgarianBackend(TTSBackend):
             "path": output_path,
             "sample_rate": sr or self._sample_rate,
         }
-

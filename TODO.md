@@ -1,8 +1,7 @@
 # TODO — Outstanding backlog
 
-Items deliberately **not** included in the CodeRabbit full-review fix commit
-(`993b781`) because they need their own focused pass. Each entry lists *why* it
-was deferred and the suggested approach.
+Outstanding items are listed below with their current status; completed entries
+remain briefly documented for traceability.
 
 ## High priority
 
@@ -76,28 +75,24 @@ was deferred and the suggested approach.
 - GPU/network tests (`test_gpu_transcribe`, `test_qwen`, `test_generation`,
   live-server part of `test_llama_server_backend`) stay manual/nightly.
 
-### 10. Remote EJS solver policy
-- `yt-dlp` still fetches `ejs:github` by default (`ZAST_NO_REMOTE_EJS=1`
-  disables it). **Approach:** vendor/pin it once yt-dlp supports version
-  pinning, then flip the default to off.
+### 10. Remote EJS solver policy — resolved
+- Remote EJS fetching is now opt-in via `ZAST_ALLOW_REMOTE_EJS=1`; it is off
+  by default. `ZAST_NO_REMOTE_EJS=1` remains a hard disable.
 
-### 11. `start.js` auto-updates `yt-dlp` on every launch
-- Unpinned `uv pip install -U yt-dlp` — a bad nightly can break downloads
-  mid-release. **Approach:** pin a known-good floor or move the update behind
-  an explicit "Update yt-dlp" menu entry.
+### 11. `start.js` auto-updates `yt-dlp` on every launch — resolved
+- Removed the launch-time update. `update.js` retains the update in the
+  explicit user-triggered update flow.
 
-### 12. Remove / gate the JS debug log
-- `app.py` embeds `js_debug_log` + `[ZastDebug]` console logging (hidden in
-  production CSS but still executing). **Approach:** gate behind
-  `ZAST_DEBUG=1` and strip from `BLOCKS_JS` otherwise.
+### 12. Remove / gate the JS debug log — resolved
+- Debug logging is included only when `ZAST_DEBUG=1`; production `BLOCKS_JS`
+  omits the logger, console output, and debug-log element.
 
 ### 13. `voxcpm` import failure in this environment
-- `check_env.py` reports `[FAIL] voxcpm not installed` (pre-existing env
-  state, unrelated to the review fixes — VoxCPM 2 correctly disappears from
-  the TTS engine list). **Approach:** re-run the install.js step 3
-  (`uv pip install "voxcpm>=2.0.2"`) or confirm the package was renamed.
+- The repository has no Pinokio `env` in this workspace, and the active
+  interpreter does not have `voxcpm`. The package name/version remains
+  declared in `requirements.txt` and `install.js` step 3; rerun that step in
+  the app's Pinokio environment to restore VoxCPM 2.
 
-### 14. Windows console encoding in test scripts
-- The test scripts crash under `cp1252`/`cp1251` consoles; they only pass
-  with `PYTHONIOENCODING=utf-8`. **Approach:** add the UTF-8 `reconfigure`
-  preamble (as `app.py` does) to every `test_*.py`.
+### 14. Windows console encoding in test scripts — resolved
+- All `test_*.py` scripts now reconfigure stdout and stderr to UTF-8 with
+  replacement for characters unsupported by the active Windows code page.
