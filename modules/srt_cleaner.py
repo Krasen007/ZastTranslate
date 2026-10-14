@@ -597,50 +597,56 @@ Cleaned text:"""
 
         return cues
 
-    def _wrap_lines(self, text: str, max_chars_per_line: int = 50) -> List[str]:
-        """Wrap text into 1 or 2 (or 3 for very long sentences) balanced lines under max_chars_per_line."""
+    def _wrap_lines(self, text: str, max_chars_per_line: int = None) -> List[str]:
+        """Wrap text into 1 or 2 (or 3+ for very long sentences) balanced lines.
+
+        `max_chars_per_line` defaults to the instance setting (40 by default);
+        the old hardcoded 50 ignored SRTCleaner(max_chars_per_line=...). Every
+        emitted line respects the hard limit (except a single over-long word).
+        """
+        max_chars = int(max_chars_per_line or self.max_chars_per_line or 50)
         text = text.strip()
-        if len(text) <= max_chars_per_line:
+        if len(text) <= max_chars:
             return [text]
 
         words = text.split()
         if len(words) <= 1:
             return [text]
 
-        if len(text) <= max_chars_per_line * 2 + 20:
+        # Balanced 2-line split when both halves fit the hard limit.
+        if len(text) <= max_chars * 2:
             mid = len(text) // 2
-            best_split = len(words) // 2
-            min_diff = float("inf")
+            best_split = max(1, len(words) // 2)
             curr_len = 0
-
+            min_diff = float("inf")
             for i, w in enumerate(words[:-1]):
                 curr_len += len(w) + 1
                 diff = abs(curr_len - mid)
                 if diff < min_diff:
                     min_diff = diff
                     best_split = i + 1
-
             line1 = " ".join(words[:best_split])
             line2 = " ".join(words[best_split:])
-            return [line1, line2]
-        else:
-            # 3 lines
-            n_lines = 3
-            target_len = len(text) // n_lines
-            lines = []
-            curr_line = []
-            curr_len = 0
-            for w in words:
-                if curr_line and curr_len + len(w) + 1 > target_len and len(lines) < n_lines - 1:
-                    lines.append(" ".join(curr_line))
-                    curr_line = [w]
-                    curr_len = len(w)
-                else:
-                    curr_line.append(w)
-                    curr_len += len(w) + (1 if len(curr_line) > 1 else 0)
-            if curr_line:
+            if len(line1) <= max_chars and len(line2) <= max_chars:
+                return [line1, line2]
+
+        # Greedy hard-limit wrap (3+ lines). Unlike the old fixed 3-line branch,
+        # the tail line is also bounded, so no line can silently exceed max_chars.
+        lines = []
+        curr_line = []
+        curr_len = 0
+        for w in words:
+            w_len = len(w) + (1 if curr_line else 0)
+            if curr_line and curr_len + w_len > max_chars:
                 lines.append(" ".join(curr_line))
-            return lines
+                curr_line = [w]
+                curr_len = len(w)
+            else:
+                curr_line.append(w)
+                curr_len += w_len
+        if curr_line:
+            lines.append(" ".join(curr_line))
+        return lines
 
     def _chunk_words(self, words: List[str], max_chars: int) -> List[str]:
         """Group words into chunks not exceeding max_chars, breaking on punctuation when possible."""

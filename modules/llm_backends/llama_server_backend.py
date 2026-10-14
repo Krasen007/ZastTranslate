@@ -39,15 +39,28 @@ def get_server_url() -> str:
 
 def set_server_url(url: str) -> str:
     """Validate + persist a llama-server base URL. Returns the cleaned URL."""
+    from urllib.parse import urlparse
     cleaned = (url or "").strip().strip('"').strip("'")
     if not cleaned:
         raise ValueError("Empty URL - paste the llama-server base URL (e.g. http://127.0.0.1:8080/v1).")
     cleaned = cleaned.rstrip("/")
-    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in ("http", "https"):
         raise ValueError("URL must start with http:// or https:// (e.g. http://127.0.0.1:8080/v1).")
+    if not parsed.hostname:
+        raise ValueError(f"URL has no host: {cleaned!r}")
+    host = (parsed.hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"[llama-server] WARNING: non-loopback server URL ({cleaned}). "
+            "Prompts (video transcripts) will be sent to that host — "
+            "only use servers you trust."
+        )
     os.makedirs(os.path.dirname(_SERVER_URL_FILE), exist_ok=True)
-    with open(_SERVER_URL_FILE, "w", encoding="utf-8") as f:
+    tmp = _SERVER_URL_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(cleaned)
+    os.replace(tmp, _SERVER_URL_FILE)
     return cleaned
 
 
@@ -86,30 +99,43 @@ class LlamaServerBackend(LLMBackend):
 
     # -- HTTP helpers ---------------------------------------------------------
 
-    def _request(self, path: str, payload: dict = None, timeout: float = 30.0):
+    def _request(self, path: str, payload: dict = None, timeout: float = 30.0, retries: int = 3):
         """POST (or GET when payload is None) to {base_url}{path}. Returns parsed JSON."""
         url = f"{self.base_url}{path}"
         data = None if payload is None else json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
-        req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read().decode("utf-8")
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as e:
-            detail = ""
+        last_error = None
+        for attempt in range(1, retries + 1):
+            req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+            req.add_header("Content-Type", "application/json")
+            api_key = os.environ.get("LLAMA_SERVER_API_KEY", "")
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
             try:
-                detail = e.read().decode("utf-8", "ignore")
-            except Exception:
-                pass
-            raise RuntimeError(f"llama-server HTTP {e.code} at {url}: {detail or e.reason}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(self._unreachable_msg(e.reason)) from e
-        except (ConnectionError, TimeoutError, OSError) as e:
-            # Covers http.client.RemoteDisconnected and friends, which are NOT
-            # wrapped in URLError — a stopped/wrong-port server must still produce
-            # the actionable "start llama-server" message rather than a raw traceback.
-            raise RuntimeError(self._unreachable_msg(e)) from e
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                    return json.loads(body) if body else {}
+            except urllib.error.HTTPError as e:
+                detail = ""
+                try:
+                    detail = e.read().decode("utf-8", "ignore")
+                except Exception:
+                    pass
+                # 4xx (bad request / auth) won't heal on retry — fail fast.
+                if 400 <= e.code < 500:
+                    raise RuntimeError(f"llama-server HTTP {e.code} at {url}: {detail or e.reason}") from e
+                last_error = RuntimeError(f"llama-server HTTP {e.code} at {url}: {detail or e.reason}")
+            except urllib.error.URLError as e:
+                last_error = RuntimeError(self._unreachable_msg(e.reason))
+                break  # server down / DNS: retrying won't help within one call
+            except (ConnectionError, TimeoutError, OSError) as e:
+                # Covers http.client.RemoteDisconnected and friends, which are NOT
+                # wrapped in URLError — a stopped/wrong-port server must still produce
+                # the actionable "start llama-server" message rather than a raw traceback.
+                last_error = RuntimeError(self._unreachable_msg(e))
+            if attempt < retries:
+                import time as _time
+                _time.sleep(1.5 * attempt)
+        raise last_error
 
     @staticmethod
     def _unreachable_msg(reason) -> str:
@@ -194,9 +220,9 @@ class LlamaServerBackend(LLMBackend):
 
         # Defensive: older llama.cpp builds may ignore `chat_template_kwargs` and still
         # burn the budget on reasoning, leaving `content` empty. If that happened, retry
-        # once with a much larger budget so the model can finish thinking AND answer.
+        # once with a larger (capped) budget so the model can finish thinking AND answer.
         if not content and self._has_reasoning(resp):
-            bigger = max(int(max_new_tokens) * 6, int(max_new_tokens) + 512)
+            bigger = min(int(max_new_tokens) * 2, 2048)
             resp = self._request("/chat/completions", payload=_payload(bigger), timeout=600.0)
             content = self._extract_content(resp)
         return content

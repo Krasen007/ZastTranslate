@@ -171,7 +171,15 @@ def get_backend(name: str):
                 matched = v
                 break
         if matched is None:
-            matched = list(available.values())[0]
+            if not available:
+                raise ValueError(
+                    f"Unknown LLM backend: {name!r} (no LLM backends are available — "
+                    "install transformers+accelerate+bitsandbytes for PyTorch models, "
+                    "llama-cpp-python for GGUF models, or start a llama-server)."
+                )
+            raise ValueError(
+                f"Unknown LLM backend: {name!r}. Available: {sorted(available.keys())}"
+            )
         requested_backend = matched
     
     if _active_llm_backend is not None and _active_llm_backend.name != requested_backend.name:

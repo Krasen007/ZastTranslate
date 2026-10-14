@@ -55,7 +55,11 @@ TEMPERATURE = 0.3
 TOP_K = 250
 TOP_P = 0.95
 REP_PENALTY = 1.1
-MAX_NEW_TOKENS = 512  # ~20.5 s of audio at 25 frames/s
+MAX_NEW_TOKENS = 512  # ~20.5 s of audio at 25 frames/s (upper bound; per-chunk budget is derived from slot)
+
+# 25 codec frames per second of audio. Per-chunk token budget = slot seconds ×
+# this rate + margin, clamped to [64, MAX_NEW_TOKENS].
+FRAMES_PER_SECOND = 25
 
 
 class BgTTSBackend(TTSBackend):
@@ -214,11 +218,20 @@ class BgTTSBackend(TTSBackend):
         if not chunks:
             raise ValueError("[BgTTS-38M] Text contains no supported characters.")
 
+        # Duration-aware token budget: slot seconds → codec frames (+25% margin).
+        # Falls back to the full MAX_NEW_TOKENS when no slot is given.
+        slot_budget = None
+        if duration and duration > 0:
+            slot_budget = max(64, min(MAX_NEW_TOKENS, int(duration * FRAMES_PER_SECOND * 1.25)))
+
         all_codes = []
         for i, chunk in enumerate(chunks):
+            per_chunk = MAX_NEW_TOKENS
+            if slot_budget is not None and len(chunks) > 0:
+                per_chunk = max(64, min(MAX_NEW_TOKENS, slot_budget // len(chunks)))
             codes = _gen(
                 self.model, self._tokenizer, chunk, speaker_emb,
-                MAX_NEW_TOKENS, TEMPERATURE, TOP_K, TOP_P, REP_PENALTY, self.device,
+                per_chunk, TEMPERATURE, TOP_K, TOP_P, REP_PENALTY, self.device,
             )
             if codes is None or len(codes) == 0:
                 raise RuntimeError(

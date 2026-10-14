@@ -1,15 +1,35 @@
 import torch
 import os
+import threading
 import soundfile as sf
 import numpy as np
 from .base import TTSBackend
 from config import DEVICE, TEMP_DIR
+
+_VOXCpm_DEFAULT_PROMPTS = {
+    # Keep non-English defaults short and neutral so the cloned voice stays
+    # consistent regardless of the target language.
+    "default": "(A clear, professional and expressive {gender} voice) Hello, this is the default voice for your translations.",
+    "fr": "(Une voix {gender} claire, professionnelle et expressive) Bonjour, ceci est la voix par défaut pour vos traductions.",
+    "es": "(Una voz {gender} clara, profesional y expresiva) Hola, esta es la voz predeterminada para tus traducciones.",
+    "de": "(Eine klare, professionelle und ausdrucksstarke {gender} Stimme) Hallo, dies ist die Standardstimme für deine Übersetzungen.",
+}
+
+_VOXCpm_GENDER_WORDS = {
+    "default": {"woman": "woman", "man": "man"},
+    "fr": {"woman": "de femme", "man": "d'homme"},
+    "es": {"woman": "femenina", "man": "masculina"},
+    "de": {"woman": "Frauen", "man": "Männer"},
+}
+
 
 class VoxCPM2Backend(TTSBackend):
     def __init__(self):
         super().__init__()
         self.device = DEVICE
         self._sample_rate = None
+        self._trimmed_ref_cache = {}
+        self._trimmed_ref_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -91,16 +111,16 @@ class VoxCPM2Backend(TTSBackend):
         Trimmed to 30s: ~4-6 GB VRAM. Trimmed file is cached per source path.
         """
         cache_key = f"{ref_path}__trim{int(max_seconds)}s"
-        if getattr(self, '_trimmed_ref_cache', {}).get(cache_key):
-            return self._trimmed_ref_cache[cache_key]
-
-        if not hasattr(self, '_trimmed_ref_cache'):
-            self._trimmed_ref_cache = {}
+        with self._trimmed_ref_lock:
+            hit = self._trimmed_ref_cache.get(cache_key)
+        if hit:
+            return hit
 
         data, sr = sf.read(ref_path, always_2d=False)
         duration = len(data) / sr
         if duration <= max_seconds:
-            self._trimmed_ref_cache[cache_key] = ref_path
+            with self._trimmed_ref_lock:
+                self._trimmed_ref_cache[cache_key] = ref_path
             return ref_path
 
         # Take the first max_seconds
@@ -109,7 +129,8 @@ class VoxCPM2Backend(TTSBackend):
         trim_path = ref_path.replace(".wav", f"__ref30s.wav")
         sf.write(trim_path, trimmed, sr)
         print(f"VoxCPM 2: reference audio trimmed {duration:.0f}s -> {max_seconds:.0f}s -> {trim_path}")
-        self._trimmed_ref_cache[cache_key] = trim_path
+        with self._trimmed_ref_lock:
+            self._trimmed_ref_cache[cache_key] = trim_path
         return trim_path
 
     def _get_or_build_prompt_cache(self, ref_path: str, denoise: bool = True):
@@ -174,12 +195,17 @@ class VoxCPM2Backend(TTSBackend):
             os.makedirs(voices_dir, exist_ok=True)
             
             # Use gender-specific default voice
-            gender_str = str(gender).lower()
+            gender_key = "man" if str(gender).lower().startswith("m") else "woman"
+            gender_str = gender_key
+            lang_key = str(language or "en").lower()[:2]
+            if lang_key not in _VOXCpm_DEFAULT_PROMPTS:
+                lang_key = "default"
+            gender_word = _VOXCpm_GENDER_WORDS.get(lang_key, _VOXCpm_GENDER_WORDS["default"])[gender_key]
             default_wav = os.path.join(voices_dir, f"default_{gender_str}.wav")
-            
+
             if not os.path.exists(default_wav):
                 print(f"VoxCPM 2: Generating a persistent default voice (default_{gender_str}.wav) to ensure consistency...")
-                prompt = f"(A clear, professional and expressive {gender_str} voice) Hello, this is the default voice for your translations."
+                prompt = _VOXCpm_DEFAULT_PROMPTS[lang_key].format(gender=gender_word)
                 wav = self.model.generate(
                     text=prompt,
                     normalize=False,

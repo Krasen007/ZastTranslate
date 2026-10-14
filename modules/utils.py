@@ -8,7 +8,12 @@ import soundfile as sf
 import numpy as np
 
 def get_exact_duration(filepath):
-    """Return the EXACT duration in seconds via ffprobe (high-precision float)"""
+    """Return the EXACT duration in seconds via ffprobe (high-precision float).
+
+    Raises RuntimeError when ffprobe is missing or probing fails — callers must
+    handle it explicitly. Returning a silent 0.0 previously poisoned the whole
+    timeline (CPS math, voice track length, duration verification).
+    """
     cmd = [
         'ffprobe', '-v', 'quiet',
         '-show_entries', 'format=duration',
@@ -16,11 +21,18 @@ def get_exact_duration(filepath):
         filepath
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "ffprobe not found in PATH — install ffmpeg (https://ffmpeg.org/download.html) "
+            "and restart the app."
+        ) from e
+    except subprocess.SubprocessError as e:
+        raise RuntimeError(f"ffprobe failed on {filepath}: {e}") from e
+    try:
         return float(result.stdout.strip())
-    except Exception as e:
-        print(f"ffprobe error on {filepath}: {e}")
-        return 0.0
+    except ValueError as e:
+        raise RuntimeError(f"ffprobe returned non-numeric duration for {filepath}: {result.stdout!r}") from e
 
 def convert_sample_rate(input_path, output_path, target_sr, channels=1):
     """Convert sample rate and channel count of an audio file via ffmpeg"""
@@ -29,7 +41,7 @@ def convert_sample_rate(input_path, output_path, target_sr, channels=1):
         '-ar', str(target_sr), '-ac', str(channels),
         output_path
     ]
-    subprocess.run(cmd, capture_output=True, check=True)
+    subprocess.run(cmd, capture_output=True, check=True, timeout=600)
 
 def cleanup_model(model):
     """Release a model from VRAM/RAM cleanly"""
@@ -40,10 +52,12 @@ def cleanup_model(model):
         torch.cuda.empty_cache()
 
 def save_progress(progress_data, filepath="temp/progress.json"):
-    """Save pipeline state for error recovery"""
+    """Save pipeline state for error recovery (atomic write)."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, 'w', encoding='utf-8') as f:
+    tmp = filepath + ".tmp"
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(progress_data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, filepath)
 
 def load_progress(filepath="temp/progress.json"):
     """Load a saved pipeline state"""

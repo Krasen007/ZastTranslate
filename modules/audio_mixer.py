@@ -3,7 +3,6 @@ import numpy as np
 import librosa
 import os
 import subprocess
-from modules.utils import get_exact_duration
 from config import OUTPUT_SAMPLE_RATE, OUTPUT_CHANNELS
 
 class AudioMixer:
@@ -40,11 +39,10 @@ class AudioMixer:
         
         mixed = (v_audio * v_gain) + (bg_audio * bg_gain)
         
-        # Clip / Normalize to avoid clipping
-        max_val = np.max(np.abs(mixed))
-        if max_val > 1.0:
-            mixed = mixed / max_val
-            
+        # Clip to int16 range instead of renormalizing the whole mix:
+        # renormalization would destroy the voice/BG balance the user set.
+        mixed = np.clip(mixed, -1.0, 1.0)
+
         # Write (transpose for soundfile: shape (samples, channels))
         sf.write(output_path, mixed.T, OUTPUT_SAMPLE_RATE, subtype='PCM_16')
         
@@ -59,12 +57,21 @@ class AudioMixer:
         
         import shutil
         shutil.copy2(mixed_path, wav_path)
-        
+
+        tmp_mp3 = mp3_path + ".tmp"
         cmd = [
             'ffmpeg', '-y', '-i', mixed_path,
             '-b:a', '320k',
-            mp3_path
+            tmp_mp3
         ]
-        subprocess.run(cmd, check=True)
-        
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+            os.replace(tmp_mp3, mp3_path)
+        finally:
+            try:
+                if os.path.exists(tmp_mp3):
+                    os.remove(tmp_mp3)
+            except OSError:
+                pass
+
         return {"wav": wav_path, "mp3": mp3_path}

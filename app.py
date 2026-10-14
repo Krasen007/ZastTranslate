@@ -2,20 +2,26 @@ import sys
 # Gradio 6's Dataframe.preprocess() crashes on a None payload
 # (payload.headers on None) BEFORE any Python handler runs, which kills
 # Validate/Continue/Translate clicks when a table is None. Treat None as [].
+# Gated by major version: only patch Gradio 6.x where the bug exists.
 try:
-    from gradio.components.dataframe import Dataframe as _GrDataframe
-    _orig_df_preprocess = _GrDataframe.preprocess
-    def _safe_df_preprocess(self, payload):
-        if payload is None:
-            if getattr(self, "type", "array") == "pandas":
-                import pandas as _pd
-                return _pd.DataFrame([])
-            if getattr(self, "type", None) == "numpy":
-                import numpy as _np
-                return _np.empty((0, 0))
-            return []
-        return _orig_df_preprocess(self, payload)
-    _GrDataframe.preprocess = _safe_df_preprocess
+    import gradio as _gr_for_patch
+    _gr_major = int(str(getattr(_gr_for_patch, "__version__", "0")).split(".")[0])
+    if _gr_major == 6:
+        from gradio.components.dataframe import Dataframe as _GrDataframe
+        if not getattr(_GrDataframe.preprocess, "_zast_none_guard", False):
+            _orig_df_preprocess = _GrDataframe.preprocess
+            def _safe_df_preprocess(self, payload):
+                if payload is None:
+                    if getattr(self, "type", "array") == "pandas":
+                        import pandas as _pd
+                        return _pd.DataFrame([])
+                    if getattr(self, "type", None) == "numpy":
+                        import numpy as _np
+                        return _np.empty((0, 0))
+                    return []
+                return _orig_df_preprocess(self, payload)
+            _safe_df_preprocess._zast_none_guard = True
+            _GrDataframe.preprocess = _safe_df_preprocess
 except Exception as _e:
     print(f"[Gradio patch] Dataframe None-guard not applied: {_e}")
 # Force UTF-8 encoding on Windows console to prevent charmap UnicodeEncodeErrors with Asian/Cyrillic/Arabic text
@@ -7070,13 +7076,16 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
     app.queue() # Enable websocket queue to prevent GPU process thread deadlocks
+    # Serve only generated-file dirs: full BASE_DIR would expose token.pickle,
+    # client_secret.json, downloads cache and sources to the browser.
+    _serve_paths = [OUTPUT_DIR, TEMP_DIR]
     try:
         _theme = gr.themes.Soft(primary_hue="indigo", secondary_hue="slate", neutral_hue="slate")
         app.launch(
             server_name="127.0.0.1",
             server_port=port,
             theme=_theme,
-            allowed_paths=[BASE_DIR],
+            allowed_paths=_serve_paths,
             js=BLOCKS_JS,
             css=BLOCKS_CSS,
         )
@@ -7085,7 +7094,7 @@ if __name__ == "__main__":
         app.launch(
             server_name="127.0.0.1",
             theme=_theme,
-            allowed_paths=[BASE_DIR],
+            allowed_paths=_serve_paths,
             js=BLOCKS_JS,
             css=BLOCKS_CSS,
         )

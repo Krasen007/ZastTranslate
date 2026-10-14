@@ -663,12 +663,17 @@ class TimeSync:
                     full_audio[start_sample:start_sample + xfade_len] * fade_out
                     + audio[:xfade_len] * fade_in
                 )
-                # Write remainder normally
+                # Write remainder by summing (never cut the faded tail below)
                 if audio_len > xfade_len:
-                    full_audio[start_sample + xfade_len:end_sample] = audio[xfade_len:audio_len]
+                    full_audio[start_sample + xfade_len:end_sample] += audio[xfade_len:audio_len]
             else:
-                # No significant overlap — write normally
-                full_audio[start_sample:end_sample] = audio[:audio_len]
+                # No significant overlap — sum instead of overwriting so the tail of
+                # the previous segment is never cut (prevents clicks/cut phonemes).
+                end_existing = min(end_sample, len(full_audio))
+                if audio_len > 0 and end_existing > start_sample:
+                    full_audio[start_sample:end_existing] += audio[:end_existing - start_sample]
+                elif audio_len > 0:
+                    pass  # out of bounds, nothing to write
             
             # Update the actual end of written audio
             prev_audio_end = max(prev_audio_end, end_sample)

@@ -53,7 +53,9 @@ def test_import_translation_srt():
             (4.0, 7.0, "Welcome to this video today."),
         ])
 
-        (status, data, json_html, title, desc, srt_path, sub_sel) = app.step3b_import_translation_srt(
+        # Returns 8 values: status, data, json_html, title, desc, srt_path,
+        # subtitle-selection default, and the interactive gr.update.
+        (status, data, json_html, title, desc, srt_path, sub_sel, _interactive) = app.step3b_import_translation_srt(
             _FakeFile(tmp_srt), "English"
         )
 
@@ -101,7 +103,8 @@ def test_save_translation_empty_grid_fallback():
 
     # Empty / None grid payload (what Gradio 6 sometimes delivers).
     for empty in ([], None):
-        status, synth_upd, json_html, df_data = app.step5_save_translation(
+        # Returns 5: status, continue-update, json_html, dubbing df, dubbing-btn update
+        status, synth_upd, json_html, df_data, _dub_btn = app.step5_save_translation(
             empty, "Fitted Translation", "", ""
         )
         assert "No translation data found" not in status, (
@@ -115,7 +118,7 @@ def test_save_translation_empty_grid_fallback():
 def test_save_translation_truly_empty_still_errors():
     import app
     app.state.translated_segments = []
-    status, _, _, _ = app.step5_save_translation([], "Fitted Translation", "", "")
+    status, _, _, _, _ = app.step5_save_translation([], "Fitted Translation", "", "")
     assert "No translation data found" in status, f"Expected error when nothing to save: {status}"
     print("[OK] step5_save_translation still errors when there is genuinely no data")
 

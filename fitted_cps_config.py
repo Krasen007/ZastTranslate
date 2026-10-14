@@ -62,16 +62,36 @@ def load_user_cps() -> dict:
     try:
         if _os.path.exists(_USER_CPS_PATH):
             with open(_USER_CPS_PATH, "r", encoding="utf-8") as f:
-                return {k: float(v) for k, v in _json.load(f).items()}
+                data = _json.load(f)
+            out = {}
+            for k, v in data.items():
+                try:
+                    cps = float(v)
+                except (TypeError, ValueError):
+                    print(f"[CPS] Ignoring invalid override {k!r}={v!r} (not a number).")
+                    continue
+                if not (0.5 <= cps <= 30.0):
+                    print(f"[CPS] Ignoring out-of-range override {k!r}={cps} (must be 0.5..30).")
+                    continue
+                out[str(k)] = cps
+            return out
     except Exception:
         pass
     return {}
 
 
 def save_user_cps(overrides: dict) -> None:
-    """Persist user CPS overrides to JSON file."""
-    with open(_USER_CPS_PATH, "w", encoding="utf-8") as f:
-        _json.dump(overrides, f, indent=2, ensure_ascii=False)
+    """Persist user CPS overrides to JSON file (validated, atomic write)."""
+    clean = {}
+    for k, v in (overrides or {}).items():
+        cps = float(v)
+        if not (0.5 <= cps <= 30.0):
+            raise ValueError(f"Invalid CPS for {k!r}: {cps} (must be 0.5..30 chars/sec).")
+        clean[str(k)] = cps
+    tmp = _USER_CPS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(clean, f, indent=2, ensure_ascii=False)
+    _os.replace(tmp, _USER_CPS_PATH)
 
 
 def get_effective_cps(lang_code: str, user_overrides: dict = None) -> float:

@@ -19,8 +19,6 @@ module.exports = {
                 env: {
                     "UV_NATIVE_TLS": "true",
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: [
                     "uv pip install gradio",
@@ -49,8 +47,6 @@ module.exports = {
                 env: {
                     "UV_NATIVE_TLS": "true",
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: "uv pip install \"voxcpm>=2.0.2\""
             }
@@ -68,8 +64,6 @@ module.exports = {
                 env: {
                     "UV_NATIVE_TLS": "true",
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: "uv pip install --no-deps --ignore-requires-python \"git+https://github.com/Aratako/MioCodec\" || echo \"BgTTS-38M backend unavailable - Bulgarian cloning falls back to Edge-TTS BG\""
             }
@@ -93,8 +87,6 @@ module.exports = {
                 path: ".",
                 env: {
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: "uv pip install \"llama-cpp-python @ https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/llama_cpp_python-0.3.36-py3-none-win_amd64.whl\" || uv pip install llama-cpp-python || echo \"llama-cpp-python unavailable - local .gguf Custom models disabled (predefined models still work via PyTorch)\""
             }
@@ -107,8 +99,6 @@ module.exports = {
                 path: ".",
                 env: {
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: "uv pip install llama-cpp-python"
             }
@@ -123,8 +113,6 @@ module.exports = {
                 env: {
                     "UV_NATIVE_TLS": "true",
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: "uv pip install wheel psutil ninja packaging && uv pip install flash-attn --no-build-isolation || echo FlashAttention not available - will use default attention"
             }
@@ -140,8 +128,6 @@ module.exports = {
                 env: {
                     "UV_NATIVE_TLS": "true",
                     "UV_SYSTEM_CERTS": "true",
-                    "UV_INSECURE_HOST": "pypi.org,pypi.python.org,files.pythonhosted.org",
-                    "PIP_TRUSTED_HOST": "pypi.org pypi.python.org files.pythonhosted.org"
                 },
                 message: [
                     "python check_env.py",

@@ -1,7 +1,20 @@
+# NOTE: This NLLB module is legacy. The active translation path is the LLM
+# reformulator (modules/reformulator.py via llm_backends). NLLB is only used as
+# an opt-in fallback and loads lazily — importing this module loads nothing.
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from modules.utils import cleanup_model
 from config import DEVICE, LANGUAGES
+
+
+def _resolve_nllb_code(name, role="language"):
+    code = LANGUAGES.get(name)
+    if code is None:
+        raise ValueError(
+            f"Unknown {role} {name!r} for NLLB translation. "
+            f"Available: {sorted(LANGUAGES.keys())}"
+        )
+    return code
 
 class Translator:
     def __init__(self, model_name="facebook/nllb-200-distilled-600M"):
@@ -14,7 +27,13 @@ class Translator:
         if self.model is None:
             print(f"Loading NLLB-200 ({self.model_name})...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(self.device)
+            if self.device == "cuda":
+                # FP16 halves the 600M footprint so NLLB can coexist with LLM/TTS.
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                    self.model_name, torch_dtype=torch.float16
+                ).to(self.device)
+            else:
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(self.device)
 
     def translate_text(self, text, source_lang_name, target_lang_name):
         """
@@ -37,36 +56,38 @@ class Translator:
             return segments
 
         self.load_model()
-        
-        src_code = LANGUAGES.get(source_lang_name, "eng_Latn")
-        tgt_code = LANGUAGES.get(target_lang_name, "eng_Latn")
-        
+
+        src_code = _resolve_nllb_code(source_lang_name, role="source language")
+        tgt_code = _resolve_nllb_code(target_lang_name, role="target language")
+
         print(f"Traduction de {source_lang_name} ({src_code}) vers {target_lang_name} ({tgt_code})...")
 
         tgt_token_id = self.tokenizer.convert_tokens_to_ids(tgt_code)
         if tgt_token_id == self.tokenizer.unk_token_id:
             print(f"WARNING: Language code '{tgt_code}' not found in tokenizer. Trying alternatives...")
             tgt_token_id = self.tokenizer.convert_tokens_to_ids(f"__{tgt_code}__")
-        
+
         self.tokenizer.src_lang = src_code
-        
-        for seg in segments:
-            text = seg.get("text", "").strip()
+
+        # Batch tokenization: one encoder pass for all non-empty segments.
+        texts = [seg.get("text", "").strip() for seg in segments]
+        non_empty_idx = [i for i, t in enumerate(texts) if t]
+        if non_empty_idx:
+            batch = [texts[i] for i in non_empty_idx]
+            inputs = self.tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
+            with torch.no_grad():
+                translated_tokens = self.model.generate(
+                    **inputs,
+                    forced_bos_token_id=tgt_token_id,
+                    max_new_tokens=256,
+                )
+            decoded = self.tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)
+            for i, text in zip(non_empty_idx, decoded):
+                segments[i]["translated_text"] = text
+        for i, text in enumerate(texts):
             if not text:
-                seg["translated_text"] = ""
-                continue
-            
-            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
-            translated_tokens = self.model.generate(
-                **inputs, 
-                forced_bos_token_id=tgt_token_id, 
-                max_length=512
-            )
-            
-            translated_text = self.tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
-            seg["translated_text"] = translated_text
-            
+                segments[i]["translated_text"] = ""
+
         return segments
 
     def retranslate_constrained(self, segments, source_lang_name, target_lang_name, 
@@ -80,10 +101,10 @@ class Translator:
             return segments, 0
 
         self.load_model()
-        
-        src_code = LANGUAGES.get(source_lang_name, "eng_Latn")
-        tgt_code = LANGUAGES.get(target_lang_name, "eng_Latn")
-        
+
+        src_code = _resolve_nllb_code(source_lang_name, role="source language")
+        tgt_code = _resolve_nllb_code(target_lang_name, role="target language")
+
         tgt_token_id = self.tokenizer.convert_tokens_to_ids(tgt_code)
         if tgt_token_id == self.tokenizer.unk_token_id:
             tgt_token_id = self.tokenizer.convert_tokens_to_ids(f"__{tgt_code}__")
@@ -108,13 +129,14 @@ class Translator:
             # NLLB subword ratio: ~1.3-1.8 tokens per char, use 1.5
             max_tokens = max(10, int(max_chars * 1.5))
             
-            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
-            constrained_tokens = self.model.generate(
-                **inputs,
-                forced_bos_token_id=tgt_token_id,
-                max_length=max_tokens
-            )
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True).to(self.device)
+
+            with torch.no_grad():
+                constrained_tokens = self.model.generate(
+                    **inputs,
+                    forced_bos_token_id=tgt_token_id,
+                    max_new_tokens=max_tokens,
+                )
             
             constrained_text = self.tokenizer.batch_decode(constrained_tokens, skip_special_tokens=True)[0]
             

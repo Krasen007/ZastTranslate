@@ -15,29 +15,44 @@ else:
     print("[yt-dlp] WARNING: No JS runtime (node/deno) found in PATH. Some YouTube formats may be unavailable.")
 
 
-def _ydl_base_opts() -> dict:
-    """Common yt-dlp options with automatic JS runtime injection and remote challenge solver."""
+def _ydl_base_opts(allow_remote_components: bool = True) -> dict:
+    """Common yt-dlp options with automatic JS runtime injection.
+
+    YouTube's n-challenge needs a JS runtime (node/deno) plus yt-dlp's remote
+    EJS solver ('ejs:github', fetched over HTTPS from the yt-dlp org). That is
+    a supply-chain surface, so set allow_remote_components=False to disable it
+    (some age-gated / SABR formats may then fail).
+    """
     opts = {}
     if _JS_RUNTIME:
         opts['js_runtimes'] = {_JS_RUNTIME: {}}
-        opts['remote_components'] = ['ejs:github']
+        if allow_remote_components:
+            opts['remote_components'] = ['ejs:github']
     ffmpeg = shutil.which('ffmpeg')
     if ffmpeg:
         opts['ffmpeg_location'] = ffmpeg
     return opts
 
 
+_ALLOW_REMOTE_EJS = os.environ.get("ZAST_NO_REMOTE_EJS", "") != "1"
+
+
 class VideoDownloader:
     def __init__(self):
         os.makedirs(TEMP_DIR, exist_ok=True)
+
+    @staticmethod
+    def _base_opts():
+        return _ydl_base_opts(allow_remote_components=_ALLOW_REMOTE_EJS)
 
     def check_url(self, url):
         """
         Fetch video info without downloading.
         Returns {"title": str, "duration": float, "resolutions": list[str]}
+        Set ZAST_NO_REMOTE_EJS=1 to disable yt-dlp's remote EJS solver.
         """
         ydl_opts = {
-            **_ydl_base_opts(),
+            **VideoDownloader._base_opts(),
             'quiet': True,
             'noplaylist': True,
         }
@@ -83,7 +98,7 @@ class VideoDownloader:
     def _probe_info(self, url):
         """Fetch video metadata WITHOUT downloading (used for the cache check)."""
         ydl_opts = {
-            **_ydl_base_opts(),
+            **VideoDownloader._base_opts(),
             'quiet': True,
             'noplaylist': True,
             'skip_download': True,
@@ -144,7 +159,7 @@ class VideoDownloader:
                 progress_callback(0.88, "Extracting audio and processing formats...")
 
         ydl_opts = {
-            **_ydl_base_opts(),
+            **VideoDownloader._base_opts(),
             'format': fmt,
             'format_sort': format_sort,
             # Store in the persistent cache, keyed by video ID for reliable reuse.

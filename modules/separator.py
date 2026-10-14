@@ -9,29 +9,37 @@ class VocalSeparator:
     def __init__(self, model_name="htdemucs"):
         self.model_name = model_name
 
-    def _find_existing_stems(self, track_name):
+    def _find_existing_stems(self, track_name, audio_path=None):
         """
         Return the directory containing already-separated stems for this track,
         or None if none exist. Mirrors the robust lookup used after demucs runs
         so we can detect a previous run BEFORE paying for separation again.
+
+        Only returns a cache hit when the directory name actually matches
+        ``track_name`` (exact or fuzzy). NEVER falls back to the most-recent
+        unrelated stems — reusing the wrong song's vocals is worse than
+        re-running Demucs. When ``audio_path`` is given, the cached stems must
+        also be newer than the source audio (avoids stale reuse after the
+        user replaces the file with same name).
         """
         parent_dir = os.path.join(TEMP_DIR, self.model_name)
         direct = os.path.join(parent_dir, track_name)
         if os.path.exists(os.path.join(direct, "vocals.wav")):
-            return direct
+            if self._stems_are_fresh(os.path.join(direct, "vocals.wav"), audio_path):
+                return direct
+            return None
         if not os.path.exists(parent_dir):
             return None
 
-        subdirs = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
+        try:
+            subdirs = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
+        except OSError:
+            return None
         valid_dirs = []
         for sd in subdirs:
             vp = os.path.join(parent_dir, sd, "vocals.wav")
             if os.path.exists(vp):
-                try:
-                    mtime = os.path.getmtime(vp)
-                except OSError:
-                    mtime = 0
-                valid_dirs.append((sd, mtime))
+                valid_dirs.append(sd)
         if not valid_dirs:
             return None
 
@@ -41,7 +49,7 @@ class VocalSeparator:
 
         cleaned_track = clean_name(track_name)
         best_sd, best_score = None, -1
-        for sd, _mtime in valid_dirs:
+        for sd in valid_dirs:
             cleaned_sd = clean_name(sd)
             score = 0
             if cleaned_track == cleaned_sd:
@@ -55,10 +63,29 @@ class VocalSeparator:
                 best_sd = sd
 
         if best_sd and best_score > 0:
-            return os.path.join(parent_dir, best_sd)
-        # Fallback: most recently written stems
-        valid_dirs.sort(key=lambda x: x[1], reverse=True)
-        return os.path.join(parent_dir, valid_dirs[0][0])
+            candidate = os.path.join(parent_dir, best_sd)
+            if self._stems_are_fresh(os.path.join(candidate, "vocals.wav"), audio_path):
+                return candidate
+            return None
+        # No name match -> cache miss. Do NOT return the most-recent
+        # unrelated stems (previous behaviour caused silent wrong-song dubbing).
+        return None
+
+    @staticmethod
+    def _stems_are_fresh(vocals_path, audio_path=None):
+        """True if cached stems exist, are non-empty, and newer than source audio."""
+        try:
+            if not os.path.isfile(vocals_path) or os.path.getsize(vocals_path) == 0:
+                return False
+        except OSError:
+            return False
+        if audio_path:
+            try:
+                if os.path.isfile(audio_path) and os.path.getmtime(vocals_path) < os.path.getmtime(audio_path):
+                    return False
+            except OSError:
+                pass
+        return True
 
     def separate(self, audio_path):
         """
@@ -72,7 +99,7 @@ class VocalSeparator:
         track_name = os.path.splitext(os.path.basename(audio_path))[0]
 
         # Cache hit: this track was already separated in a previous run.
-        cached_dir = self._find_existing_stems(track_name)
+        cached_dir = self._find_existing_stems(track_name, audio_path=audio_path)
         if cached_dir:
             vocals_path = os.path.join(cached_dir, "vocals.wav")
             background_path = os.path.join(cached_dir, "no_vocals.wav")
@@ -89,11 +116,11 @@ class VocalSeparator:
             "--two-stems", "vocals",
             audio_path
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=3600)
 
         # Default Demucs output path: out_dir/model_name/track_name/
         # Robust lookup handles demucs sanitizing/truncating the directory name.
-        output_dir = self._find_existing_stems(track_name) or os.path.join(TEMP_DIR, self.model_name, track_name)
+        output_dir = self._find_existing_stems(track_name, audio_path=None) or os.path.join(TEMP_DIR, self.model_name, track_name)
 
         vocals_path = os.path.join(output_dir, "vocals.wav")
         background_path = os.path.join(output_dir, "no_vocals.wav")

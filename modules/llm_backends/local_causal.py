@@ -82,16 +82,28 @@ class LocalCausalLMBackend(LLMBackend):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+    def _apply_chat_template(self, messages):
+        """Apply the chat template, tolerating older transformers without `enable_thinking`."""
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,  # CRITICAL: disable Qwen3/Reasoning models internal reasoning
+            )
+        except TypeError:
+            # Older transformers / non-Qwen tokenizers don't accept enable_thinking.
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
     def generate(self, messages: list, max_new_tokens: int = 4096, multiline: bool = False, **kwargs) -> str:
         if self.model is None:
             self.load()
-            
-        text_input = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False  # CRITICAL: disable Qwen3/Reasoning models internal reasoning
-        )
+
+        text_input = self._apply_chat_template(messages)
         model_inputs = self.tokenizer([text_input], return_tensors="pt").to(self.device)
 
         # Default generation args
@@ -134,9 +146,7 @@ class LocalCausalLMBackend(LLMBackend):
             self.model.generation_config.pad_token_id = self.tokenizer.eos_token_id
 
         texts = [
-            self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
-            )
+            self._apply_chat_template(msgs)
             for msgs in messages_list
         ]
 
@@ -145,12 +155,43 @@ class LocalCausalLMBackend(LLMBackend):
 
         do_sample = kwargs.get("do_sample", False)
         gen_kwargs = {
+            # Hard cap; per-row budgets are enforced by _RowTokenBudget below so a
+            # short cue no longer waits for the longest cue's whole budget.
             "max_new_tokens": max(max_new_tokens_list),
             "do_sample": do_sample,
             "repetition_penalty": kwargs.get("repetition_penalty", 1.0),
         }
         if do_sample:
             gen_kwargs["temperature"] = kwargs.get("temperature", 0.7)
+
+        # Per-row token budgets: once a row has produced its own max_new_tokens,
+        # force EOS for that row. HF generate then pads it while other rows continue.
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        class _RowTokenBudget(StoppingCriteria):
+            def __init__(self, prompt_len, limits, pad_id, eos_id):
+                self.prompt_len = prompt_len
+                self.limits = limits
+                self.pad_id = pad_id if pad_id is not None else eos_id
+                self.eos_id = eos_id if eos_id is not None else pad_id
+                self.hit = [False] * len(limits)
+
+            def __call__(self, input_ids, scores, **kwargs):
+                produced = input_ids.shape[1] - self.prompt_len
+                for i, limit in enumerate(self.limits):
+                    if not self.hit[i] and produced >= limit:
+                        self.hit[i] = True
+                        tok = self.eos_id if self.eos_id is not None else self.pad_id
+                        if tok is not None and 0 <= tok < scores.shape[-1]:
+                            forced = torch.full_like(scores[i], float("-inf"))
+                            forced[tok] = 0.0
+                            scores[i] = forced
+                return all(self.hit)
+
+        eos_id = self.tokenizer.eos_token_id
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([
+            _RowTokenBudget(padded_len, list(max_new_tokens_list), self.tokenizer.pad_token_id, eos_id)
+        ])
 
         with torch.no_grad():
             generated_ids = self.model.generate(**model_inputs, **gen_kwargs)

@@ -35,7 +35,10 @@ pip-delete-this-directory.txt
 # ZastTranslate specific
 temp/
 output/
-models/
+models/*
+!models/bgtts/
+models/bgtts/*
+!models/bgtts/samples/
 cache/
 logs/
 pretrained_models/
@@ -46,6 +49,7 @@ cosyvoice/
 *.m4a
 *.flac
 *.zip
+!voices/default_*.wav
 blog_images/
 
 # Local / generated files
@@ -75,4 +79,5 @@ QWEN.md
 
 # Credentials and secrets
 client_secret.json
+token.pickle
 *.json.oauth2

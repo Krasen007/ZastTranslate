@@ -1,11 +1,17 @@
 # torch/torchaudio installed via torch.js
-gradio>=4.0.0
+gradio==6.*
 yt-dlp>=2024.0.0
 git+https://github.com/m-bain/whisperX.git
 # Pinned: whisperx 3.2.0's TranscriptionOptions defaults predate faster-whisper>=1.1's
 # required 'multilingual'/'hotwords' args; modules/transcriber.py shims them via asr_options.
 # Keep this pin until whisperx upstream includes the keys itself.
 faster-whisper==1.2.1
+# Pinned to 4.x: whisperx 3.2.0's TranscriptionOptions shim targets the 4.x
+# TranscriptionOptions API (multilingual/hotwords kwargs); transformers master
+# may rename those and break transcription. Re-pin deliberately after testing.
+transformers==4.*
+accelerate==1.*
+huggingface-hub>=0.34.0,<1.0
 # CUDA 12 runtime DLLs (cublas64_12.dll / cuDNN 9) for faster-whisper's ctranslate2
 # backend on GPU. torch cu130 ships CUDA 13 only (cublas64_13.dll) and no system CUDA
 # toolkit is present, so ctranslate2's lazy LoadLibrary fails with "cublas64_12.dll not
@@ -17,7 +23,6 @@ nvidia-cuda-runtime-cu12>=12.4.0
 # Required by whisperx's VAD stack (pyannote.audio checkpoint unpickling needs it);
 # missing on fresh installs -> "ModuleNotFoundError: No module named 'omegaconf'".
 omegaconf>=2.3.0
-git+https://github.com/huggingface/transformers.git
 sentencepiece
 protobuf
 demucs>=4.0.0
@@ -26,7 +31,6 @@ soundfile>=0.12.0
 librosa>=0.10.0
 numpy>=2.2.2
 ffmpeg-python>=0.2.0
-accelerate>=0.25.0
 bitsandbytes>=0.43.0
 voxcpm>=2.0.2
 scenedetect>=0.7.1

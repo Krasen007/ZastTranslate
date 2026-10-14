@@ -47,8 +47,12 @@ except ImportError:
 
 # 5. Transformers
 try:
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, Pipeline
     import transformers
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    try:
+        from transformers.pipelines import Pipeline
+    except ImportError:
+        Pipeline = None  # transformers>=4.35 moved it; only needed for type hints
     print(f"[OK] transformers {transformers.__version__}")
 except ImportError as e:
     errors.append("transformers")

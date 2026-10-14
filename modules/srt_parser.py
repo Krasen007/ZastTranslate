@@ -223,13 +223,15 @@ class SRTParser:
     def validate_srt(self, segments):
         """
         Validate segment consistency.
-        Returns a list of errors.
+        Returns a list of errors. Sorts a copy first so unsorted input does
+        not produce false overlap reports.
         """
         errors = []
-        for i, seg in enumerate(segments):
+        ordered = sorted(segments, key=lambda s: (s.get("start", 0), s.get("end", 0)))
+        for i, seg in enumerate(ordered):
             if seg["end"] <= seg["start"]:
                 errors.append(f"Segment {i+1}: invalid duration ({seg['start']} -> {seg['end']})")
-            if i > 0 and seg["start"] < segments[i-1]["end"]:
+            if i > 0 and seg["start"] < ordered[i-1]["end"]:
                 errors.append(f"Segment {i+1}: overlaps with segment {i}")
         return errors
 

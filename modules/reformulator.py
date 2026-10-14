@@ -2,7 +2,6 @@ import torch
 import re
 from config import DEVICE, CHARS_PER_SECOND
 from modules.llm_backends import get_backend
-from config import DEVICE, CHARS_PER_SECOND
 
 class Reformulator:
     """
@@ -10,7 +9,7 @@ class Reformulator:
     Uses Qwen3-8B to translate and fit text to time constraints in a single pass.
     Replaces the old NLLB + separate reformulation pipeline.
     """
-    def __init__(self, backend_name="Qwen2.5-7B-Instruct"):
+    def __init__(self, backend_name="Qwen2.5-7B-Instruct (Ideal for 8 GB VRAM GPUs)"):
         self.backend_name = backend_name
         self.llm = None
 

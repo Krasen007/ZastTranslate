@@ -154,11 +154,14 @@ class LlamaCppBackend(LLMBackend):
         choice = response["choices"][0]["message"].get("content")
         choice = choice if choice is not None else ""
         # Defensive: if the build ignored the kwarg and burned the budget on reasoning,
-        # retry once with a much larger budget so the model can finish thinking + answer.
+        # retry once with a larger (but capped) budget so the model can finish
+        # thinking + answer. Capped at mnt*2 / 2048 max: the old *6 retry blew the
+        # context on 8 GB GPUs (very slow, often OOM).
         if not choice and not multiline:
             reasoning = response["choices"][0]["message"].get("reasoning_content")
             if reasoning and str(reasoning).strip():
-                bigger = max(int(max_new_tokens) * 6, int(max_new_tokens) + 512)
+                bigger = min(max(int(max_new_tokens) * 2, int(max_new_tokens) + 512), 2048)
+                print(f"[LlamaCpp] Empty content with {len(str(reasoning))} chars of reasoning; retrying with {bigger} tokens.")
                 response = self.model.create_chat_completion(
                     messages=messages,
                     max_tokens=bigger,

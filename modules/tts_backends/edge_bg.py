@@ -154,17 +154,28 @@ class EdgeBulgarianBackend(TTSBackend):
                 data, sr = samples, seg.frame_rate
             except Exception:
                 import subprocess
-                subprocess.run(
-                    ["ffmpeg", "-y", "-v", "error", "-i", src_path, output_path],
-                    check=True, capture_output=True
-                )
+                tmp_out = output_path + ".tmp"
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-v", "error", "-i", src_path, tmp_out],
+                        check=True, capture_output=True, timeout=120,
+                    )
+                    os.replace(tmp_out, output_path)
+                finally:
+                    try:
+                        if os.path.exists(tmp_out):
+                            os.remove(tmp_out)
+                    except OSError:
+                        pass
                 info = sf.info(output_path)
                 return info.samplerate, info.frames
 
         if data.ndim > 1:
             data = data.mean(axis=1)
 
-        sf.write(output_path, data.astype(np.float32), sr)
+        tmp_out = output_path + ".tmp"
+        sf.write(tmp_out, data.astype(np.float32), sr)
+        os.replace(tmp_out, output_path)
         return sr, len(data)
 
     def generate(self, text: str, language: str, output_path: str, ref_audio_path: str = None,
