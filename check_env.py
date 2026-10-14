@@ -148,6 +148,13 @@ except ImportError:
     print("[INFO] edge-tts not installed (optional) — Bulgarian dubbing unavailable")
 
 # 15. BgTTS-38M (optional — local Bulgarian + English zero-shot voice cloning)
+# Install the warning filter first so `import miocodec` below doesn't print
+# its FlashAttention/SDPA notice (normal and safe on Windows — see
+# modules/quiet_flash_attn.py).
+try:
+    from modules import quiet_flash_attn  # noqa: F401
+except Exception:
+    pass
 try:
     import miocodec  # noqa: F401
     import jsonargparse  # noqa: F401

@@ -29,6 +29,10 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
+# Must run before any `import miocodec` (first happens in load()): drops that
+# library's import-time "FlashAttention is not installed" WARNING on Windows.
+from modules import quiet_flash_attn as _quiet_flash_attn  # noqa: F401
+
 from .base import TTSBackend
 from config import DEVICE, MODELS_DIR
 
