@@ -152,9 +152,6 @@ def get_backend(name: str):
             except Exception:
                 pass
         _active_llm_backend = requested_backend
-        models_dir = os.path.expanduser("~/.zasttranslate/models")
-        os.environ["HF_HOME"] = models_dir
-        os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(models_dir, "hub")
         return _active_llm_backend
 
     available = get_available_backends()
@@ -187,10 +184,4 @@ def get_backend(name: str):
         _active_llm_backend.unload()
         
     _active_llm_backend = requested_backend
-    
-    # Redirect HuggingFace Cache to user's local directory to avoid C: drive bloat
-    models_dir = os.path.expanduser("~/.zasttranslate/models")
-    os.environ["HF_HOME"] = models_dir
-    os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(models_dir, "hub")
-    
     return _active_llm_backend

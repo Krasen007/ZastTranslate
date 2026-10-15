@@ -33,6 +33,27 @@ DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 for d in [TEMP_DIR, OUTPUT_DIR, MODELS_DIR, VOICES_DIR, DOWNLOADS_DIR]:
     os.makedirs(d, exist_ok=True)
 
+
+def configure_hf_cache() -> None:
+    """Redirect HuggingFace cache to the project's local models directory.
+
+    Must be called explicitly from the application entry point (app.py main)
+    rather than at module import time, so that HF cache location is configured
+    once at startup instead of being silently mutated on every import or
+    backend lookup.
+
+    Sets both HF_HOME and HUGGINGFACE_HUB_CACHE and creates the directory
+    tree so downloads land under ~/.zasttranslate/models/{hub, ...} instead of
+    the user's global ~/.cache/huggingface.
+    """
+    models_dir = os.path.expanduser("~/.zasttranslate/models")
+    hf_home = os.path.join(models_dir)
+    hub_cache = os.path.join(models_dir, "hub")
+    os.makedirs(hf_home, exist_ok=True)
+    os.makedirs(hub_cache, exist_ok=True)
+    os.environ["HF_HOME"] = hf_home
+    os.environ["HUGGINGFACE_HUB_CACHE"] = hub_cache
+
 # GPU/CPU
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 try:

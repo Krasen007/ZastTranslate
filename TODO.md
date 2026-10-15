@@ -46,11 +46,7 @@ remain briefly documented for traceability.
 - **Approach:** pin whisperx to a commit SHA; produce a `uv.lock` /
   `requirements.lock` with hashes for release tags.
 
-### 7. Stop mutating `HF_HOME` at import time
-- `modules/tts_backends/factory.py` and `llm_backends/factory.py` set
-  `HF_HOME` / `HUGGINGFACE_HUB_CACHE` when imported.
-- **Approach:** move into the respective `load()` paths (or a single
-  `config.configure_hf_cache()` called from `app.py` main).
+
 
 ## Low priority / hygiene
 
@@ -64,8 +60,10 @@ remain briefly documented for traceability.
 
 
 ## Recently completed
-### 8. Silent `except Exception: pass` audit
-- Remaining in `downloader.py`, `separator.py`, app dataframe parsing, and
-  `hybrid.py` path helpers.
-- **Approach:** log at `WARNING` with file/segment context (one-line helper
-  `_warn_ctx(msg, e)`), keep `pass` only for genuinely optional cleanup.
+### 7. Stop mutating `HF_HOME` at import time — DONE
+- `modules/tts_backends/factory.py` and `llm_backends/factory.py` previously set
+  `HF_HOME` / `HUGGINGFACE_HUB_CACHE` at import time / in `get_backend()`.
+- **Fix:** added `config.configure_hf_cache()` in `config.py` that sets both
+  vars and creates `~/.zasttranslate/models/{hub,...}` once; called from
+  `app.py` main before `app.launch()`. Removed all mutations from both factory
+  files so imports no longer have side effects on the process environment.

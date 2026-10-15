@@ -3,10 +3,6 @@ from .voxcpm2 import VoxCPM2Backend
 from .edge_bg import EdgeBulgarianBackend
 from .bgtts import BgTTSBackend
 
-# Redirect HuggingFace cache to shared directory
-HF_HOME = os.path.expanduser("~/.zasttranslate/models")
-os.makedirs(HF_HOME, exist_ok=True)
-os.environ["HF_HOME"] = HF_HOME
 
 class TTSFactory:
     def __init__(self):

@@ -7102,6 +7102,11 @@ if __name__ == "__main__":
 
     _zast_loop.set_exception_handler(_zast_asyncio_exception_handler)
 
+    # Configure HuggingFace cache once at startup (not at module import time).
+    # Redirects HF_HOME / HUGGINGFACE_HUB_CACHE to ~/.zasttranslate/models
+    # so downloads don't bloat the user's global ~/.cache/huggingface.
+    configure_hf_cache()
+
     port = int(os.environ.get("GRADIO_SERVER_PORT", 7860))
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
