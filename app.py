@@ -203,17 +203,15 @@ def find_segment_audio_path(start, lang=None, never_cut=None):
 
     return None
 
-def _build_dubbing_df_data(text_source):
+def _build_dubbing_df_data():
     if not state.translated_segments:
         return []
     target_lang = state.video_info.get('target_language', 'fr') if state.video_info else 'fr'
     
     rows = []
     for idx, seg in enumerate(state.translated_segments):
-        text = seg.get("translated_text", "") # fitted
-        if text_source == "Normal Translation":
-            text = seg.get("normal_text", text)
-            
+        # Show TTS-used text (tts_text set during reformulation) or fall back to translated_text
+        text = seg.get("tts_text", seg.get("translated_text", ""))
         start = seg.get("start", 0.0)
         end = seg.get("end", 0.0)
         
@@ -229,7 +227,7 @@ def _build_dubbing_df_data(text_source):
         ])
     return rows
 
-def toggle_dubbing_text_source_warning(choice):
+def _placeholder_unused(choice):
     if choice == "Normal Translation":
         return gr.update(value="⚠️ **Warning**: Normal translation is not adapted to segment duration. The synthesized speech may overflow the video slot, causing truncation or desync. Fitted translation is recommended.", visible=True)
     return gr.update(value="", visible=False)
@@ -243,11 +241,10 @@ def load_segment_to_editor(*args, **kwargs):
         else:
             remaining_args.append(a)
     
-    text_source = remaining_args[0] if len(remaining_args) > 0 else "Fitted (Dubbing-optimized)"
-    voice_mode = remaining_args[1] if len(remaining_args) > 1 else VOICE_MODE_DEFAULT
-    voice_file = remaining_args[2] if len(remaining_args) > 2 else None
-    never_cut = remaining_args[3] if len(remaining_args) > 3 else False
-    default_voice_gender = remaining_args[4] if len(remaining_args) > 4 else "Male"
+    voice_mode = remaining_args[0] if len(remaining_args) > 0 else VOICE_MODE_DEFAULT
+    voice_file = remaining_args[1] if len(remaining_args) > 1 else None
+    never_cut = remaining_args[2] if len(remaining_args) > 2 else False
+    default_voice_gender = remaining_args[3] if len(remaining_args) > 3 else "Male"
 
     if evt is None or not hasattr(evt, "index"):
         return gr.update(visible=False), 0, "", 0, 0.0, 0, 0.0, None, "Error: No selection", _get_empty_segments_html()
@@ -262,8 +259,6 @@ def load_segment_to_editor(*args, **kwargs):
     
     seg = state.translated_segments[row_idx]
     text = seg.get("translated_text", "")
-    if text_source == "Normal Translation":
-        text = seg.get("normal_text", text)
     
     start_min = int(seg["start"] // 60)
     start_sec = round(seg["start"] % 60, 2)
@@ -1161,7 +1156,7 @@ def step3_save_transcription(data):
 
     return f"✅ Transcription validated ({len(new_segments)} segments). Subtitles saved to output/{os.path.basename(srt_path) if srt_path else ''}. Go to 'Translation' tab.", gr.update(interactive=True), gr.update(interactive=True), _get_segments_json_html(), srt_path, gr.update(interactive=True)
 
-def step4_translate(target_lang, original_title="", original_desc="", whisper_only=False, disable_fitted=False, progress=gr.Progress()):
+def step4_translate(target_lang, original_title="", original_desc="", whisper_only=False, progress=gr.Progress()):
     # Translate works straight from the last transcription — if the table was
     # never validated, fall back to state.segments instead of hard-failing, so
     # the button never looks dead after a good transcription.
@@ -1240,80 +1235,29 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
             seg["translated_text"] = seg.get("text", "")
             seg["normal_text"] = seg.get("text", "")
     else:
-        # PHASE 1: LLM fitted translation — concision calibrated to TTS speaking rate.
-        # Skipped when "Disable Fitted Translation" is checked: we go straight to a
-        # single natural full translation and mirror it into the fitted column.
-        if disable_fitted:
-            progress(0.1, "Natural translation only (fitted translation disabled)...")
-            translated = [dict(s) for s in state.segments]
-            state.translated_segments = translated
-            reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
-            for seg in state.translated_segments:
-                seg["translated_text"] = seg.get("normal_text", seg.get("translated_text", ""))
-        else:
-            progress(0.1, "Phase 1/3: Fitted translation (time-constrained)...")
-            translated = reformulator.translate_segments(
-                state.segments, source_lang, target_lang, target_lang_code,
-                cps=cps, speed_factor=speed_factor
-            )
-            state.translated_segments = translated
-
-            # PHASE 2: LLM reformulation for segments STILL too long (safety net)
-            progress(0.4, "Phase 2/2: Reformulating remaining long segments...")
-
-            # Identify segments that still exceed timing (skip in same-language mode to preserve 100% of authentic speech)
-            long_segments_info = []
-            src_name = reformulator._source_language_name(source_lang)
-            tgt_name = reformulator._language_name(target_lang_code)
-            if src_name != tgt_name:
-                for idx, seg in enumerate(state.translated_segments):
-                    text = seg.get("translated_text", "")
-                    duration = seg["end"] - seg["start"]
-                    max_chars = int(duration * cps * speed_factor)
-                    if len(text) > max_chars * 1.1 and text.strip():
-                        long_segments_info.append((idx, text, max_chars, seg))
-
-            if long_segments_info:
-                print(f"Reformulating {len(long_segments_info)} overflowing segments using GPU-batched inference...")
-                items_to_shorten = [(text, max_chars) for _, text, max_chars, _ in long_segments_info]
-                shortened_results = reformulator.shorten_batch(items_to_shorten, target_lang_code, batch_size=8)
-
-                for (_, text, _, seg), shortened in zip(long_segments_info, shortened_results):
-                    if shortened and len(shortened) < len(text):
-                        seg["translated_text"] = shortened
-                        seg["reformulated"] = True
-                        reformulated_count += 1
-                        print(f"  Reformulated [{seg['start']:.1f}-{seg['end']:.1f}]: {len(text)}→{len(shortened)} chars")
-
-            if reformulated_count > 0:
-                print(f"Reformulated {reformulated_count} segments to fit timing")
-
-            # PHASE 3: Natural full translation for the 'Translation' column
-            progress(0.6, "Phase 3/3: Natural full translation (unconstrained)...")
-            reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
+        # Single pass: natural full translation (no length constraints, no fitted pass)
+        progress(0.1, "Natural translation (full, unconstrained)...")
+        translated = [dict(s) for s in state.segments]
+        state.translated_segments = translated
+        reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
+        for seg in state.translated_segments:
+            seg["translated_text"] = seg.get("normal_text", seg.get("translated_text", ""))
 
     state.video_info['translated_title'] = translated_title
     state.video_info['translated_description'] = translated_desc
 
     progress(0.7, "Checking subtitle timings and generating preview...")
 
-    # Build Dataframe with 5 columns: Start, End, Original, Translation (normal), Fitted
+    # Build Dataframe with 4 columns: Start, End, Original, Translation (full)
     data = []
     for seg in state.translated_segments:
-        normal_text = seg.get("normal_text", seg.get("translated_text", ""))
-        fitted = seg["translated_text"]
-        
-        # Show fit status on fitted column
-        duration = seg["end"] - seg["start"]
-        max_chars = int(duration * cps * MAX_SPEED_FACTOR)
-        status = "✅" if len(fitted) <= max_chars * 1.1 else "⚠️"
+        translation = seg.get("normal_text", seg.get("translated_text", ""))
         
         data.append([
             round(seg['start'], 2), 
             round(seg['end'], 2), 
             seg['text'],
-            normal_text,
-            f"{status} {fitted}"
+            translation
         ])
     
     status_msg = f"Translation complete ({len(data)} segments"
@@ -1336,7 +1280,7 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
         print(f"[EXPORT] Warning saving translation SRTs: {e}")
         srt_path = None
         
-    return status_msg, data, _get_segments_json_html(), translated_title, translated_desc, srt_path, "Translation (Fitted)", gr.update(interactive=True)
+    return status_msg, data, _get_segments_json_html(), translated_title, translated_desc, srt_path, "Translation", gr.update(interactive=True)
 
 def step3b_import_translation_srt(srt_file, target_lang):
     """Import an already-translated SRT into the Translation tab (standalone step).
@@ -1401,14 +1345,12 @@ def step3b_import_translation_srt(srt_file, target_lang):
             "text": original,
             "translated_text": text,
             "normal_text": text,
-            "fitted_text": text,
         })
         data.append([
             round(start, 2),
             round(end, 2),
             original,
             text,
-            f"{status} {text}",
         ])
 
     state.translated_segments = new_translated
@@ -1437,7 +1379,7 @@ def step3b_import_translation_srt(srt_file, target_lang):
 
     return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation (Fitted)", gr.update(interactive=True)
 
-def step5_save_translation(data, dubbing_text_source="Fitted Translation", translated_title="", translated_desc=""):
+def step5_save_translation(data, translated_title="", translated_desc=""):
     rows = _dataframe_to_rows(data)
     # Gradio 6 can occasionally deliver an empty/None Dataframe payload (e.g. when
     # the "Continue to Dubbing" button re-reads the grid right after a re-render, or
@@ -1449,43 +1391,27 @@ def step5_save_translation(data, dubbing_text_source="Fitted Translation", trans
         rows = [[
             s.get("start", 0.0), s.get("end", 0.0), s.get("text", ""),
             s.get("normal_text", s.get("translated_text", "")),
-            s.get("translated_text", ""),
         ] for s in state.translated_segments]
     count = 0
-    import re
     for i, row in enumerate(rows):
         if i < len(state.translated_segments):
-            # Backup original fitted
-            if 'fitted_text' not in state.translated_segments[i]:
-                state.translated_segments[i]['fitted_text'] = state.translated_segments[i].get('translated_text', '')
-            
-            # Column 3 = Translation (normal/full)
-            normal_text = str(row[3]).strip()
-            if normal_text:
-                state.translated_segments[i]['normal_text'] = normal_text
-            
-            # Column 4 = Fitted (with status emoji prefix — strip it)
-            text = str(row[4])
-            text = re.sub(r'^[✅⚠️\ufe0f]+\s*', '', text)
-            state.translated_segments[i]['fitted_text'] = text
-            state.translated_segments[i]['translated_text'] = text
+            # Column 2 = Translation (full, unconstrained)
+            translation = str(row[3]).strip()
+            if translation:
+                state.translated_segments[i]['normal_text'] = translation
+                state.translated_segments[i]['translated_text'] = translation
             count += 1
             
     if count == 0:
         return "⚠️ No translation data found.", gr.update(interactive=False), _get_empty_segments_html(), [], gr.update(interactive=False)
         
-    # Set active text based on source selection
-    for seg in state.translated_segments:
-        if dubbing_text_source == "Normal Translation":
-            seg['translated_text'] = seg.get('normal_text', seg.get('fitted_text', ''))
-        else:
-            seg['translated_text'] = seg.get('fitted_text', '')
+
             
     if state.video_info:
         state.video_info['translated_title'] = translated_title
         state.video_info['translated_description'] = translated_desc
 
-    df_data = _build_dubbing_df_data(dubbing_text_source)
+    df_data = _build_dubbing_df_data()
     return (
         f"✅ Translation validated ({count} segments). Go to the 'Dubbing & Export' tab.",
         gr.update(interactive=True),
@@ -1527,7 +1453,7 @@ def export_translation_srt(df_data=None):
     """Export normal/full translation as clean & ergonomically wrapped SRT file."""
     if df_data is not None:
         try:
-            step5_save_translation(df_data, dubbing_text_source="Normal Translation")
+            step5_save_translation(df_data)
         except Exception:
             pass
     if not state.translated_segments:
@@ -1546,7 +1472,7 @@ def export_fitted_srt(df_data=None):
     """Export fitted/concise translation as clean & ergonomically wrapped SRT file (used for dubbing)."""
     if df_data is not None:
         try:
-            step5_save_translation(df_data, dubbing_text_source="Fitted Translation")
+            step5_save_translation(df_data)
         except Exception:
             pass
     if not state.translated_segments:
@@ -1628,20 +1554,11 @@ def ensure_vocals_and_reference_audio():
         except Exception as e:
             print(f"[WARN] Failed to extract reference audio: {e}")
 
-def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Woman", dubbing_text_source="Fitted Translation", progress=gr.Progress()):
+def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Woman", progress=gr.Progress()):
     if not state.translated_segments:
         return "Error: No translation available.", None, None, None, None, [], _get_empty_segments_html(), None, None, gr.update(interactive=False)
 
     try:
-        # Set active text based on source selection
-        for seg in state.translated_segments:
-            if 'fitted_text' not in seg:
-                seg['fitted_text'] = seg.get('translated_text', '')
-            if dubbing_text_source == "Normal Translation":
-                seg['translated_text'] = seg.get('normal_text', seg.get('fitted_text', ''))
-            else:
-                seg['translated_text'] = seg.get('fitted_text', '')
-
         progress(0.05, "Initializing TTS & Sync...")
 
         progress(0.05, "Preparing original vocals and background audio...")
@@ -1766,7 +1683,7 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
         shutil.copy2(mixed_audio, final_audio_export)
         
         if state.video_info.get('is_audio_only', False):
-            df_data = _build_dubbing_df_data(dubbing_text_source)
+            df_data = _build_dubbing_df_data()
             return status, gr.update(visible=False, value=None), mixed_audio, gr.update(visible=False, value=None), gr.update(visible=True, value=mixed_audio), df_data, _get_segments_json_html(), None, final_audio_export, gr.update(interactive=True)
         else:
             progress(0.9, "Assembling final video...")
@@ -1776,7 +1693,7 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
                 mixed_audio, 
                 final_video
             )
-            df_data = _build_dubbing_df_data(dubbing_text_source)
+            df_data = _build_dubbing_df_data()
             return status, gr.update(visible=True, value=final_video), mixed_audio, gr.update(visible=True, value=final_video), gr.update(visible=False, value=None), df_data, _get_segments_json_html(), final_video, final_audio_export, gr.update(interactive=True)
     except Exception as e:
         import traceback
@@ -1818,7 +1735,7 @@ def export_audio():
 
 def step6_regenerate_segment(
     row_idx_1based, text, start_min, start_sec, end_min, end_sec,
-    voice_mode, voice_file, never_cut, default_voice_gender, dubbing_text_source
+    voice_mode, voice_file, never_cut, default_voice_gender
 ):
     if not state.translated_segments:
         return None, "Error: No segments found.", [], _get_empty_segments_html(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
@@ -1838,12 +1755,9 @@ def step6_regenerate_segment(
     seg["start"] = new_start
     seg["end"] = new_end
     
-    # Update text to speak based on dubbing text source selection
-    if dubbing_text_source == "Normal Translation":
-        seg["normal_text"] = text
-    else:
-        seg["translated_text"] = text
-        seg["fitted_text"] = text
+    # Update text to speak (full translation)
+    seg["translated_text"] = text
+    seg["normal_text"] = text
         
     # Update transcription state start/end
     if idx < len(state.segments):
@@ -1919,7 +1833,7 @@ def step6_regenerate_segment(
             tts_engine.cleanup()
             reformulator.cleanup()
             
-        df_data = _build_dubbing_df_data(dubbing_text_source)
+        df_data = _build_dubbing_df_data()
         
         # Default updates if assembly is not ready
         video_update = gr.update()
@@ -4442,7 +4356,7 @@ def _get_tab_guide_html(tab_num: int) -> str:
             "goal": "Translate your subtitles into 20+ languages with intelligent syllable adaptation so the synthesized voice matches original timing.",
             "options": [
                 "<b style='color:#ffffff !important;'>Target Language</b>: <span style='color:#f1f5f9 !important;'>Select French, Spanish, German, Japanese, Chinese, Arabic, Portuguese, etc.</span>",
-                "<b style='color:#ffffff !important;'>Normal vs. Fitted Translation</b>: <span style='color:#f1f5f9 !important;'><i style='color:#cbd5e1 !important;'>Normal</i> is a direct literal translation. <i style='color:#cbd5e1 !important;'>Fitted (Recommended)</i> rephrases sentences so the syllable count matches the original speaker's exact timeframe, preventing voice overflows!</span>",
+                "<b style='color:#ffffff !important;'>Translation</b>: <span style='color:#f1f5f9 !important;'>Full natural translation generated by LLM. During dubbing, the LLM may shorten lines that exceed the available time slot — the spoken text is shown in the Dubbing tab.</span>",
                 "<b style='color:#ffffff !important;'>Metadata Translation</b>: <span style='color:#f1f5f9 !important;'>Translates video Title & Description for international YouTube SEO.</span>"
             ],
             "steps": [
@@ -4812,22 +4726,17 @@ with gr.Blocks(title="ZastTranslate") as app:
                             translated_desc_input = gr.Textbox(label="Translated Video Description", placeholder="Translated Description...", lines=4, max_lines=15, buttons=["copy"])
 
                 with gr.Group(elem_classes=["zast-card"]):
-                    gr.Markdown(f"### 🎯 2. Translation & Syllable Timing Fitting {zast_tooltip('Fitted translation calibrates text length to the speaker exact speaking rate (CPS) to prevent speech overflows.')} <span class='zast-pill zast-pill-warning'>Calibrated CPS</span>")
+                    gr.Markdown(f"### 🎯 2. Translation {zast_tooltip('Full natural translation generated by LLM. Lines are not time-constrained; during dubbing, the LLM may shorten text that exceeds the available time slot.')} <span class='zast-pill zast-pill-info'>Full Translation</span>")
                     gr.Markdown(
-                        "**Fitted Translation (Recommended):** Rephrases sentences with LLM so translated syllables match the original speaker's exact timeframe, preventing speech overflows."
+                        "**Translation:** Full natural translation generated by LLM. During dubbing, the LLM may shorten lines that exceed the available time slot — the spoken text is shown in the Dubbing tab."
                     )
                     with gr.Row():
                         btn_translate = gr.Button("▶️ Run Translation", interactive=False, variant="primary", elem_id="btn_run_translation")
                         translation_srt_input = gr.File(label="…or import an already-translated SRT (skips the LLM)", file_types=[".srt"], elem_id="translation_srt_input", scale=2)
                         btn_import_translation = gr.Button("📥 Import Translated SRT", variant="secondary", elem_id="btn_import_translation_srt", scale=1)
-                    disable_fitted_cb = gr.Checkbox(
-                        label="⏭️ Disable fitted translation (natural full translation only)",
-                        value=False,
-                        info="Skip the time-constrained 'fitted' pass and its reformulation. Produces one natural, unconstrained translation used for both columns. Faster, but lines may overflow the original timing during dubbing."
-                    )
                     translation_status = gr.Textbox(label="Status", interactive=False)
                     translation_df = gr.Dataframe(
-                        headers=["Start", "End", "Original", "Translation", "Fitted"],
+                        headers=["Start", "End", "Original", "Translation"],
                         value=[],
                         label="Edit Translation",
                         interactive=True,
@@ -4867,13 +4776,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                             value=_init_voice_value,
                             info=_init_voice_info
                         )
-                        dubbing_text_source = gr.Radio(
-                            ["Fitted Translation", "Normal Translation"],
-                            label="Dubbing Text Source",
-                            value="Fitted Translation",
-                            info="Fitted translation is recommended to match speech duration with original cuts."
-                        )
-                    dubbing_warning_box = gr.Markdown(value="", visible=False)
+
                     
                     with gr.Row():
                         default_voice_gender = gr.Radio(
@@ -6090,7 +5993,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     
     btn_translate.click(
         step4_translate,
-        [lang_target, original_title_input, original_desc_input, whisper_only_cb, disable_fitted_cb],
+        [lang_target, original_title_input, original_desc_input, whisper_only_cb],
         [translation_status, translation_df, segments_json_holder, translated_title_input, translated_desc_input, export_translation_file, subtitle_selection, btn_next_tab3],
         show_progress="full"
     )
@@ -6104,7 +6007,7 @@ with gr.Blocks(title="ZastTranslate") as app:
 
     btn_valid_translation.click(
         step5_save_translation,
-        [translation_df, dubbing_text_source, translated_title_input, translated_desc_input],
+        [translation_df, translated_title_input, translated_desc_input],
         [translation_status, btn_synth, segments_json_holder, dubbing_segments_df, btn_next_tab3]
     )
     btn_export_translation.click(export_translation_srt, [translation_df], [translation_status, export_translation_file])
@@ -6115,7 +6018,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     # Note: client-side seeking for transcription_df, translation_df, and dubbing_segments_df is handled globally in BLOCKS_JS.
     dubbing_segments_df.select(
         fn=load_segment_to_editor,
-        inputs=[dubbing_text_source, voice_mode, voice_file, never_cut_mode, default_voice_gender],
+        inputs=[voice_mode, voice_file, never_cut_mode, default_voice_gender],
         outputs=[
             segment_editor_card, edit_seg_idx, edit_seg_text, edit_start_min, edit_start_sec,
             edit_end_min, edit_end_sec, edit_seg_audio, edit_seg_status,
@@ -6131,32 +6034,14 @@ with gr.Blocks(title="ZastTranslate") as app:
         js="(val) => { window.ZastSubtitleMode = val; if (window.updateZastSubtitles) { window.updateZastSubtitles(); } }"
     )
     
-    # Text source change warning & table data updates
-    def on_dubbing_text_source_change(choice):
-        if state.translated_segments:
-            for seg in state.translated_segments:
-                if 'fitted_text' not in seg:
-                    seg['fitted_text'] = seg.get('translated_text', '')
-                if choice == "Normal Translation":
-                    seg['translated_text'] = seg.get('normal_text', seg.get('fitted_text', ''))
-                else:
-                    seg['translated_text'] = seg.get('fitted_text', '')
-        
-        warning_box = toggle_dubbing_text_source_warning(choice)
-        df_data = _build_dubbing_df_data(choice)
-        return warning_box, df_data, _get_segments_json_html()
+    # (No more text source choice - fitted translation removed)
 
-    dubbing_text_source.change(
-        on_dubbing_text_source_change,
-        [dubbing_text_source],
-        [dubbing_warning_box, dubbing_segments_df, segments_json_holder]
-    )
     
     btn_regen_seg.click(
         step6_regenerate_segment,
         [
             edit_seg_idx, edit_seg_text, edit_start_min, edit_start_sec, edit_end_min, edit_end_sec,
-            voice_mode, voice_file, never_cut_mode, default_voice_gender, dubbing_text_source
+            voice_mode, voice_file, never_cut_mode, default_voice_gender
         ],
         [
             edit_seg_audio, edit_seg_status, dubbing_segments_df, segments_json_holder,
@@ -6221,7 +6106,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     
     btn_synth.click(
         step6_synthesize, 
-        [voice_mode, voice_file, never_cut_mode, default_voice_gender, dubbing_text_source], 
+        [voice_mode, voice_file, never_cut_mode, default_voice_gender], 
         [
             synth_status, final_video_out, final_audio_out, video_preview, audio_preview,
             dubbing_segments_df, segments_json_holder, export_video_file, export_audio_file,
@@ -6907,7 +6792,7 @@ with gr.Blocks(title="ZastTranslate") as app:
         # Dubbing segments dataframe
         dubbing_update = None
         if has_translated:
-            dubbing_data = _build_dubbing_df_data("Fitted Translation")
+            dubbing_data = _build_dubbing_df_data()
             dubbing_update = dubbing_data
             
         # Metadata
@@ -7009,7 +6894,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     )
     btn_next_tab3.click(
         step5_save_translation,
-        [translation_df, dubbing_text_source, translated_title_input, translated_desc_input],
+        [translation_df, translated_title_input, translated_desc_input],
         [translation_status, btn_synth, segments_json_holder, dubbing_segments_df, btn_next_tab3],
         js="() => { window.zastSwitchTab('4.'); }"
     )
@@ -7074,12 +6959,11 @@ if __name__ == "__main__":
     # "ConnectionResetError: [WinError 10054] ... _ProactorBasePipeTransport._call_connection_lost()"
     # raised inside an event-loop cleanup callback AFTER a subprocess (e.g. FFmpeg) has already
     # finished and written its output. It does not affect the rendered video and is safe to ignore.
-    _zast_policy = asyncio.get_event_loop_policy()
     try:
-        _zast_loop = _zast_policy.get_event_loop()
+        _zast_loop = asyncio.get_running_loop()
     except RuntimeError:
         _zast_loop = asyncio.new_event_loop()
-        _zast_policy.set_event_loop(_zast_loop)
+        asyncio.set_event_loop(_zast_loop)
     _zast_orig_handler = _zast_loop.get_exception_handler()
 
     def _zast_asyncio_exception_handler(loop, context):

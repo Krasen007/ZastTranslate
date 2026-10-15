@@ -153,7 +153,7 @@ class TimeSync:
                 "truncated": False,
             }
 
-        text = segment.get("translated_text", segment.get("text", ""))
+        text = segment.get("normal_text", segment.get("translated_text", segment.get("text", "")))
         effective_duration = segment.get("effective_duration", strict_duration)
         
         # Cache reuse check per language and reference clip.
@@ -258,12 +258,11 @@ class TimeSync:
                     print(f"Segment [{segment['start']:.1f}-{segment['end']:.1f}] ({lang_tag}): using {gap_used:.2f}s from gap")
 
             # Update segment text directly if it was reformulated
+            # Preserve normal_text (full translation) — only update what TTS actually speaks
             if final_text != text:
-                segment["translated_text"] = final_text
-                if "fitted_text" in segment:
-                    segment["fitted_text"] = final_text
-                if "normal_text" in segment:
-                    segment["normal_text"] = final_text
+                segment["translated_text"] = final_text      # what TTS speaks (may be shortened)
+                segment["tts_text"] = final_text             # track the TTS-used text for UI display
+                # Do NOT overwrite normal_text — keep the full unconstrained translation
 
             # READ, RESAMPLE, SAVE
             audio, sr = sf.read(temp_tts_path)

@@ -62,7 +62,7 @@ def test_whisper_only_skips_translation():
         app.reformulator = _NoLLMTouches()
 
         status, data, _json_html, title, desc, _srt, _sub_sel, _interactive = app.step4_translate(
-            "English", "", "", whisper_only=True, disable_fitted=False, progress=_quiet_progress
+            "English", "", "", whisper_only=True, progress=_quiet_progress
         )
 
         segs = app.state.translated_segments

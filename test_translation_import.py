@@ -77,13 +77,12 @@ def test_import_translation_srt():
         seg0 = app.state.translated_segments[0]
         assert seg0["translated_text"] == "Hello everyone here."
         assert seg0["normal_text"] == "Hello everyone here."
-        assert seg0["fitted_text"] == "Hello everyone here."
         assert seg0["text"] == "Bonjour a tous"
         # Target language recorded for CPS / dubbing.
         assert app.state.video_info.get("target_language_name") == "English"
         assert app.state.video_info.get("target_language") == "eng_Latn"
-        # Subtitle selection defaults to the fitted translation.
-        assert sub_sel == "Translation (Fitted)"
+        # Subtitle selection defaults to the translation.
+        assert sub_sel == "Translation"
         print("[OK] step3b_import_translation_srt populates grid + state (2 segments)")
     finally:
         if os.path.exists(tmp_srt):
@@ -104,9 +103,9 @@ def test_save_translation_empty_grid_fallback():
     app.state.video_info = {"detected_language": "fr"}
     app.state.translated_segments = [
         {"start": 0.0, "end": 2.0, "text": "Bonjour",
-         "translated_text": "Hello", "normal_text": "Hello", "fitted_text": "Hello"},
+         "translated_text": "Hello", "normal_text": "Hello"},
         {"start": 2.5, "end": 4.0, "text": "Le monde",
-         "translated_text": "The world", "normal_text": "The world", "fitted_text": "The world"},
+         "translated_text": "The world", "normal_text": "The world"},
     ]
 
     # Empty / None grid payload (what Gradio 6 sometimes delivers).

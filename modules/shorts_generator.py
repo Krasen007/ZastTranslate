@@ -174,7 +174,7 @@ class ViralShortsStudio:
             m = sec_val // 60
             sec_rem = sec_val % 60
             if text_key != "text":
-                text_clean = (s.get(text_key) or s.get("translated_text") or s.get("fitted_text") or s.get("normal_text") or s.get("text", "")).strip()
+                text_clean = (s.get(text_key) or s.get("translated_text") or s.get("normal_text") or s.get("text", "")).strip()
             else:
                 text_clean = s.get('text', '').strip()
             if text_clean:
@@ -446,7 +446,7 @@ class ViralShortsStudio:
             if s_en <= start_time or s_st >= end_time:
                 continue
             if text_key != "text":
-                txt = (s.get(text_key) or s.get("translated_text") or s.get("fitted_text") or s.get("normal_text") or s.get("text", "")).strip()
+                txt = (s.get(text_key) or s.get("translated_text") or s.get("normal_text") or s.get("text", "")).strip()
             else:
                 txt = s.get("text", "").strip()
             if txt:
@@ -552,7 +552,7 @@ class ViralShortsStudio:
                 else:
                     # Proportional fallback for segments without word alignment or translated/dubbed text
                     if text_key != "text":
-                        text = (s.get(text_key) or s.get("translated_text") or s.get("fitted_text") or s.get("normal_text") or s.get("text", "")).strip()
+                        text = (s.get(text_key) or s.get("translated_text") or s.get("normal_text") or s.get("text", "")).strip()
                     else:
                         text = s.get("text", "").strip()
                     tokens = text.split()
