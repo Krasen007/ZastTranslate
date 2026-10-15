@@ -708,11 +708,18 @@ def step2_transcribe(lang_source, model_size, progress=gr.Progress()):
         import traceback
         traceback.print_exc()  # lands in app_run_err.log / console for diagnosis
         msg = f"❌ Transcription failed: {type(e).__name__}: {e}"
-        if "out of memory" in str(e).lower():
+        _err_lower = str(e).lower()
+        if "out of memory" in _err_lower:
             msg += (
                 "\n💡 GPU out of VRAM. Pick a smaller Whisper model "
                 "(medium / small / base), close other GPU apps, then restart "
                 "the app to clear anything left in VRAM."
+            )
+        elif "invalid device" in _err_lower or "parallel_for failed" in _err_lower:
+            msg += (
+                "\n💡 The CUDA context was left unusable by a previous VRAM "
+                "overflow. Restart the app to reset CUDA, then retry with a "
+                "smaller Whisper model (medium / small / base)."
             )
         return (
             msg,

@@ -417,20 +417,46 @@ class Transcriber:
 
             # Retry with a halved batch on activation-spike OOM instead of
             # failing the whole transcription (common on 8 GB GPUs).
+            #
+            # NOTE: CTranslate2 (faster-whisper's backend) allocates GPU memory
+            # from its OWN pool, entirely outside torch's caching allocator, so
+            # torch.cuda.empty_cache() cannot reclaim a single byte of it. Once
+            # that pool is exhausted the CUDA context is left unusable and the
+            # *next* call fails with `parallel_for failed: cudaErrorInvalidDevice:
+            # invalid device ordinal` instead of another clean OOM. Both symptoms
+            # are therefore retryable, and the ASR model is dropped + reloaded on
+            # every retry — that is the only way to release CTranslate2's pool
+            # and get back a context that can actually run inference.
             bs = batch_size
             while True:
                 try:
                     result = model.transcribe(audio, batch_size=bs)
                     break
-                except RuntimeError as oom:
-                    if "out of memory" not in str(oom).lower() or bs <= 1:
+                except RuntimeError as err:
+                    msg = str(err).lower()
+                    is_oom = "out of memory" in msg
+                    is_bad_device = "invalid device" in msg or "parallel_for failed" in msg
+                    if (not is_oom and not is_bad_device) or bs <= 1:
                         raise
                     new_bs = max(1, bs // 2)
-                    print(f"[VRAM] OOM at batch_size={bs}; retrying with batch_size={new_bs}{self._vram_status()}")
+                    cause = "OOM" if is_oom else "poisoned CUDA context"
+                    print(f"[VRAM] {cause} at batch_size={bs}; "
+                          f"reloading ASR model, retrying with batch_size={new_bs}{self._vram_status()}")
                     bs = new_bs
+                    model = None
                     gc.collect()
                     if self.device == "cuda":
                         torch.cuda.empty_cache()
+                        if hasattr(torch.cuda, "ipc_collect"):
+                            torch.cuda.ipc_collect()
+                    print("Reloading WhisperX ASR model..." + self._vram_status())
+                    model = whisperx.load_model(
+                        self.model_size,
+                        self.device,
+                        compute_type=self.compute_type,
+                        language=language,
+                        asr_options=asr_options
+                    )
             detected_lang = result.get("language", "unknown")
 
             # Alignment
