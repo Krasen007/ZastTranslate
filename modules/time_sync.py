@@ -2,6 +2,7 @@ import numpy as np
 import soundfile as sf
 import librosa
 import os
+import hashlib
 from modules.utils import get_exact_duration
 from config import (
     TOLERANCE_TOO_LONG, MIN_SEGMENT_DURATION, TEMP_DIR,
@@ -15,6 +16,13 @@ class TimeSync:
     def __init__(self, tts_engine, reformulator=None):
         self.tts = tts_engine
         self.reformulator = reformulator
+
+    @staticmethod
+    def _voice_cache_tag(voice_path):
+        if voice_path is None:
+            return "default"
+        identity = os.path.normcase(os.path.realpath(os.fsdecode(os.fspath(voice_path))))
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
 
     def _resample_to_target(self, audio, orig_sr, target_sr=OUTPUT_SAMPLE_RATE):
         """Resample audio to target sample rate if needed."""
@@ -148,9 +156,10 @@ class TimeSync:
         text = segment.get("translated_text", segment.get("text", ""))
         effective_duration = segment.get("effective_duration", strict_duration)
         
-        # Cache reuse check per language
+        # Cache reuse check per language and reference clip.
         lang_tag = str(language).lower().strip()[:3] if language else "all"
-        final_synced_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{segment['start']:.2f}_synced.wav")
+        voice_tag = self._voice_cache_tag(voice_path)
+        final_synced_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{voice_tag}_{segment['start']:.2f}_synced.wav")
         if os.path.exists(final_synced_path):
             print(f"Segment [{segment['start']:.1f}-{segment['end']:.1f}] ({lang_tag}): Reusing cached audio {final_synced_path}")
             try:
@@ -175,9 +184,9 @@ class TimeSync:
         
         # Check if backend supports duration control natively
         has_duration_control = self.tts.capabilities.get("duration_control", False)
-        temp_tts_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{segment['start']:.2f}_temp.wav")
+        temp_tts_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{voice_tag}_{segment['start']:.2f}_temp.wav")
         
-        final_synced_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{segment['start']:.2f}_synced.wav")
+        final_synced_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{voice_tag}_{segment['start']:.2f}_synced.wav")
         try:
             if has_duration_control and effective_duration > MIN_SEGMENT_DURATION:
                 # PASS 1: Generate EXACTLY at the target duration
@@ -224,7 +233,7 @@ class TimeSync:
                         if not shorter_text or len(shorter_text) >= len(current_text):
                             print(f"  Reformulation returned same/longer text, stopping")
                             break
-                        temp_regen_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{segment['start']:.2f}_regen{attempt}.wav")
+                        temp_regen_path = os.path.join(TEMP_DIR, f"seg_{lang_tag}_{voice_tag}_{segment['start']:.2f}_regen{attempt}.wav")
                         res_regen = self.tts.generate(
                             text=shorter_text, language=language, output_path=temp_regen_path,
                             ref_audio_path=voice_path, duration=effective_duration, gender=gender
@@ -405,9 +414,17 @@ class TimeSync:
                 })
                 continue
 
-            # Check if synced/cached never-cut audio already exists per language
+            voice = None
+            if voice_mapping:
+                spk = seg.get("speaker", "SPEAKER_00")
+                voice = voice_mapping.get(spk)
+            if voice is None:
+                voice = voice_path
+
+            # Cache identity must reflect the selected speaker/reference clip.
             lang_tag = str(language).lower().strip()[:3] if language else "all"
-            synced_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{seg['start']:.2f}_synced.wav")
+            voice_tag = self._voice_cache_tag(voice)
+            synced_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{voice_tag}_{seg['start']:.2f}_synced.wav")
             if os.path.exists(synced_path):
                 try:
                     info = sf.info(synced_path)
@@ -421,14 +438,7 @@ class TimeSync:
                 except Exception as e:
                     print(f"Failed to read cached never-cut audio info: {e}. Re-generating...")
 
-            voice = None
-            if voice_mapping:
-                spk = seg.get("speaker", "SPEAKER_00")
-                voice = voice_mapping.get(spk)
-            if voice is None:
-                voice = voice_path
-
-            tts_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{seg['start']:.2f}.wav")
+            tts_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{voice_tag}_{seg['start']:.2f}.wav")
             try:
                 res = self.tts.generate(
                     text=text, language=language, output_path=tts_path, ref_audio_path=voice, speed=1.0,
@@ -592,7 +602,11 @@ class TimeSync:
         lang_tag = str(language).lower().strip()[:3] if language else "all"
         for seg in placed:
             tts_path = seg.get("tts_path")
-            synced_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{seg['start']:.2f}_synced.wav")
+            voice = voice_mapping.get(seg.get("speaker", "SPEAKER_00")) if voice_mapping else None
+            if voice is None:
+                voice = voice_path
+            voice_tag = self._voice_cache_tag(voice)
+            synced_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{voice_tag}_{seg['start']:.2f}_synced.wav")
 
             if tts_path == synced_path and os.path.exists(synced_path):
                 # Already resampled and cached

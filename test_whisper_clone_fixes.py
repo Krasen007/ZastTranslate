@@ -23,6 +23,7 @@ except Exception:
 
 import importlib.util
 import os
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -169,9 +170,13 @@ def test_bgtts_falls_back_to_load_ref():
         f"got {resolved!r} (would be sample_female_bg1.wav — the reported bug)"
     )
     # An explicit per-segment ref always wins over the load()-time fallback.
-    other = os.path.abspath(__file__ + ".bak")
-    resolved = backend._resolve_reference(other, "Woman")
-    assert resolved == other, f"Explicit ref must win, got {resolved!r}"
+    with tempfile.NamedTemporaryFile(suffix=".bak", delete=False) as other_file:
+        other = other_file.name
+    try:
+        resolved = backend._resolve_reference(other, "Woman")
+        assert resolved == other, f"Explicit ref must win, got {resolved!r}"
+    finally:
+        os.remove(other)
     print("[OK] BgTTS _resolve_reference falls back to the load()-time reference")
 
 

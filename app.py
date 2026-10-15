@@ -1201,8 +1201,8 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
         state.video_info['target_language'] = target_lang_code
         state.video_info['target_language_name'] = target_lang
 
-    translated_title = ""
-    translated_desc = ""
+    translated_title = original_title
+    translated_desc = original_desc
     if original_title or original_desc:
         if whisper_only:
             # Whisper-only mode: no translation model at all (no LLM, no NLLB).
@@ -1212,9 +1212,17 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
         else:
             progress(0.02, "Translating metadata...")
             if original_title:
-                translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
+                try:
+                    translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
+                except Exception as e:
+                    print(f"Title translation error: {e}")
+                    translated_title = original_title
             if original_desc:
-                translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
+                try:
+                    translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
+                except Exception as e:
+                    print(f"Description translation error: {e}")
+                    translated_desc = original_desc
         if state.video_info:
             state.video_info['translated_title'] = translated_title
             state.video_info['translated_description'] = translated_desc
@@ -1283,19 +1291,6 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
             # PHASE 3: Natural full translation for the 'Translation' column
             progress(0.6, "Phase 3/3: Natural full translation (unconstrained)...")
             reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
-
-    if not whisper_only and original_title.strip():
-        try:
-            translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
-        except Exception as e:
-            print(f"Title translation error: {e}")
-            translated_title = original_title
-    if not whisper_only and original_desc.strip():
-        try:
-            translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
-        except Exception as e:
-            print(f"Description translation error: {e}")
-            translated_desc = original_desc
 
     state.video_info['translated_title'] = translated_title
     state.video_info['translated_description'] = translated_desc
