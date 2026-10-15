@@ -40,12 +40,6 @@ remain briefly documented for traceability.
 - **Approach:** add a UI toggle (Off / Soft / Burn) on the Dubbing tab; pass
   the fitted SRT + target ISO language (drop the `fre` default once wired).
 
-### 5. Decide the fate of the NLLB `Translator`
-- It is legacy (the LLM reformulator is the active path) but still loads with
-  the default import chain.
-- **Approach:** either delete it, or gate it behind an explicit
-  "Fallback: NLLB" option with lazy import so `transformers` Seq2Seq code
-  isn't reachable by accident.
 
 ### 6. Dependency pinning for reproducible installs
 - `requirements.txt` pins versions now, but `git+https://github.com/m-bain/whisperX.git`
@@ -75,24 +69,16 @@ remain briefly documented for traceability.
 - GPU/network tests (`test_gpu_transcribe`, `test_qwen`, `test_generation`,
   live-server part of `test_llama_server_backend`) stay manual/nightly.
 
-### 10. Remote EJS solver policy — resolved
-- Remote EJS fetching is now opt-in via `ZAST_ALLOW_REMOTE_EJS=1`; it is off
-  by default. `ZAST_NO_REMOTE_EJS=1` remains a hard disable.
 
-### 11. `start.js` auto-updates `yt-dlp` on every launch — resolved
-- Removed the launch-time update. `update.js` retains the update in the
-  explicit user-triggered update flow.
+## Recently completed
 
-### 12. Remove / gate the JS debug log — resolved
-- Debug logging is included only when `ZAST_DEBUG=1`; production `BLOCKS_JS`
-  omits the logger, console output, and debug-log element.
-
-### 13. `voxcpm` import failure in this environment
-- The repository has no Pinokio `env` in this workspace, and the active
-  interpreter does not have `voxcpm`. The package name/version remains
-  declared in `requirements.txt` and `install.js` step 3; rerun that step in
-  the app's Pinokio environment to restore VoxCPM 2.
-
-### 14. Windows console encoding in test scripts — resolved
-- All `test_*.py` scripts now reconfigure stdout and stderr to UTF-8 with
-  replacement for characters unsupported by the active Windows code page.
+- **Tab 2 "Whisper only"** — the checkbox used the legacy NLLB `Translator`
+  for translation. It now skips translation entirely (original text mirrored
+  into the translation columns, no LLM/NLLB loaded); see item 5.
+- **Tab 4 "Clone from file" used the bundled default voice** — `time_sync.
+  sync_all` / `sync_all_never_cut` never received the reference path
+  (`voice_mapping=None`), so BgTTS resolved `sample_female_bg1.wav` for every
+  segment. `voice_path` is now forwarded from Tab 4 and Bulk Mode, `voice_file`
+  is normalized (str vs file object) with an existence check, and the BgTTS
+  backend remembers the `load()`-time reference (like VoxCPM2's
+  `default_ref_audio`) as a fallback.

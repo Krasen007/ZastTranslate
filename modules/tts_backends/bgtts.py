@@ -78,6 +78,10 @@ class BgTTSBackend(TTSBackend):
         self._ckpt_path: Any = None
         # ref-path (abspath) -> torch.Tensor [128] speaker embedding (kept on CPU).
         self._speaker_cache: dict[str, Any] = {}
+        # Last reference passed to load() (None = "Default voice" mode). generate()
+        # falls back to it when called without ref_audio_path, so cloning keeps
+        # working even if a caller forgets to forward the voice path per segment.
+        self._load_ref: Any = None
 
     @property
     def name(self) -> str:
@@ -133,10 +137,15 @@ class BgTTSBackend(TTSBackend):
         )
 
     def load(self, ref_audio_path=None):
+        # Remember the most recent reference so generate() calls that omit
+        # ref_audio_path still clone from the chosen voice (mirrors voxcpm2's
+        # default_ref_audio). A None here means "Default voice" mode.
+        self._load_ref = ref_audio_path if (ref_audio_path and os.path.exists(ref_audio_path)) else None
+
         # Already loaded: just warm the speaker embedding if a new reference arrived.
         if self.model is not None:
-            if ref_audio_path and os.path.exists(ref_audio_path):
-                self._get_speaker_embedding(ref_audio_path)
+            if self._load_ref:
+                self._get_speaker_embedding(self._load_ref)
             return
 
         # Lazy heavy imports — keeps app startup fast and lets the app boot even
@@ -160,6 +169,7 @@ class BgTTSBackend(TTSBackend):
             self._tokenizer = None
             self._codec = None
             self._speaker_cache = {}
+            self._load_ref = None
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -181,6 +191,12 @@ class BgTTSBackend(TTSBackend):
     def _resolve_reference(self, ref_audio_path, gender) -> str:
         if ref_audio_path and os.path.exists(ref_audio_path):
             return ref_audio_path
+        # Fallback: the reference the app passed to load() ("Clone from file" /
+        # "Clone from original"). time_sync forwards voice_path explicitly now,
+        # but keep this so any generate() without a ref still clones correctly
+        # instead of silently switching to the bundled default voice.
+        if self._load_ref and os.path.exists(self._load_ref):
+            return self._load_ref
         return self._default_reference(gender)
 
     def _get_speaker_embedding(self, ref_path: str):

@@ -314,9 +314,13 @@ class TimeSync:
                 "overflow": 0.0,
             }
 
-    def sync_all(self, segments, language, voice_mapping=None, total_duration=None, gender="Woman"):
+    def sync_all(self, segments, language, voice_mapping=None, total_duration=None, gender="Woman", voice_path=None):
         """Sync all segments with global gap awareness.
-        
+
+        voice_path: fallback reference clip for voice cloning when voice_mapping
+            has no entry for a segment's speaker (or is None entirely). Without
+            it, backends like BgTTS fall back to their bundled default voice
+            even though the app loaded a "Clone from file" reference.
         Returns:
             synced_segments: list of synced segment dicts
             stats: dict with sped_up, truncated, overflow counts and details
@@ -338,6 +342,8 @@ class TimeSync:
             if voice_mapping:
                 spk = seg.get("speaker", "SPEAKER_00")
                 voice = voice_mapping.get(spk)
+            if voice is None:
+                voice = voice_path
 
             print(f"[TTS] Segment {i+1}/{total_segs} [{seg['start']:.1f}s-{seg['end']:.1f}s] generating...", flush=True)
             res = self.sync_segment(seg, language, voice_path=voice, gender=gender)
@@ -381,7 +387,7 @@ class TimeSync:
 
     # ---- NEVER CUT VOCAL MODE ----
 
-    def _generate_all_natural(self, segments, language, voice_mapping=None, gender="Woman"):
+    def _generate_all_natural(self, segments, language, voice_mapping=None, gender="Woman", voice_path=None):
         """
         Phase 1: Generate ALL TTS at natural speed (no speedup, no truncation).
         Returns segments enriched with tts_path and tts_duration (real measured).
@@ -419,6 +425,8 @@ class TimeSync:
             if voice_mapping:
                 spk = seg.get("speaker", "SPEAKER_00")
                 voice = voice_mapping.get(spk)
+            if voice is None:
+                voice = voice_path
 
             tts_path = os.path.join(TEMP_DIR, f"nc_seg_{lang_tag}_{seg['start']:.2f}.wav")
             try:
@@ -559,11 +567,12 @@ class TimeSync:
 
         return segments, drift_info
 
-    def sync_all_never_cut(self, segments, language, total_duration, voice_mapping=None, gender="Woman"):
+    def sync_all_never_cut(self, segments, language, total_duration, voice_mapping=None, gender="Woman", voice_path=None):
         """
         Never Cut Vocal mode: generate all TTS at natural speed, then
         plan cascade placement using global gap analysis.
-        
+
+        voice_path: fallback reference clip for voice cloning (see sync_all).
         Returns:
             synced_segments: list of dicts with synced_path, real_start, real_end
             drift_info: dict with max_drift, final_overflow, absorbed_by_gaps
@@ -573,7 +582,7 @@ class TimeSync:
         print(f"{'='*60}")
 
         # Phase 1: Generate all TTS at natural speed
-        enriched = self._generate_all_natural(segments, language, voice_mapping, gender=gender)
+        enriched = self._generate_all_natural(segments, language, voice_mapping, gender=gender, voice_path=voice_path)
 
         # Phase 2: Plan cascade placement
         placed, drift_info = self._plan_cascade_placement(enriched, total_duration)

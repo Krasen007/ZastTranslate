@@ -63,7 +63,6 @@ from config import NEVER_CUT_WARNING
 from modules.downloader import VideoDownloader
 from modules.separator import VocalSeparator
 from modules.transcriber import Transcriber
-from modules.translator import Translator
 from modules.reformulator import Reformulator
 from modules.tts_backends.factory import get_backend as get_tts_backend, get_available_backends as get_available_tts_backends
 from modules.llm_backends.factory import get_backend as get_llm_backend, get_available_backends as get_available_llm_backends
@@ -315,7 +314,6 @@ state = AppState()
 downloader = VideoDownloader()
 separator = VocalSeparator()
 transcriber = Transcriber()
-translator = Translator()
 reformulator = Reformulator()
 
 # TTS Backend Initialization
@@ -644,7 +642,7 @@ def _vram_status():
 def _free_dubbing_vram():
     """
     Free VRAM held by the translation/dubbing stack before running Whisper.
-    The LLM (Qwen2.5-7B NF4 ~4.5 GB), NLLB translator, and VoxCPM TTS (~2+ GB)
+    The LLM (Qwen2.5-7B NF4 ~4.5 GB) and VoxCPM TTS (~2+ GB)
     stay resident once loaded. On an 8 GB GPU, keeping them loaded alongside
     Whisper large-v3 (~3 GB) + CUDA context causes
     "RuntimeError: CUDA failed with error out of memory". Unload them here;
@@ -652,7 +650,7 @@ def _free_dubbing_vram():
     """
     import gc
     import torch
-    for obj in (reformulator, translator):
+    for obj in (reformulator,):
         try:
             if hasattr(obj, "cleanup"):
                 obj.cleanup()
@@ -1202,25 +1200,16 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
         state.video_info['target_language'] = target_lang_code
         state.video_info['target_language_name'] = target_lang
 
-    # Display name of the source language for the NLLB (non-LLM) translator,
-    # which keys off LANGUAGES display names. The detected source is an ISO
-    # code ('fr', 'en', ...), so normalize both spellings up front.
-    src_lang_name = reformulator._source_language_name(source_lang)
-    tgt_lang_name = reformulator._language_name(target_lang_code)
-    if tgt_lang_name == "Unknown":
-        tgt_lang_name = target_lang
-
     translated_title = ""
     translated_desc = ""
     if original_title or original_desc:
-        progress(0.02, "Translating metadata...")
         if whisper_only:
-            # Whisper-only mode: never touch the LLM — use the NLLB translator.
-            if original_title:
-                translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
-            if original_desc:
-                translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
+            # Whisper-only mode: no translation model at all (no LLM, no NLLB).
+            # Keep the original metadata untouched.
+            translated_title = original_title
+            translated_desc = original_desc
         else:
+            progress(0.02, "Translating metadata...")
             if original_title:
                 translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
             if original_desc:
@@ -1232,13 +1221,15 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
     reformulated_count = 0
 
     if whisper_only:
-        # Whisper-only mode: translate with the standalone NLLB model, no LLM.
-        progress(0.3, "Translating with NLLB (no LLM)...")
-        translated = translator.translate_segments(state.segments, src_lang_name, tgt_lang_name)
-        state.translated_segments = translated
-        # Fitted == natural in this mode (NLLB is not time-aware); keep columns in sync.
+        # Whisper-only mode: skip translation entirely — no LLM, no NLLB.
+        # Mirror the original text into the translation columns so the pipeline
+        # (Validate → Dubbing) still has translated_segments to work with; the
+        # user can import their own translated SRT on Tab 3 if needed.
+        progress(0.3, "Whisper-only mode: skipping translation (original text kept)...")
+        state.translated_segments = [dict(s) for s in state.segments]
         for seg in state.translated_segments:
-            seg["normal_text"] = seg.get("translated_text", "")
+            seg["translated_text"] = seg.get("text", "")
+            seg["normal_text"] = seg.get("text", "")
     else:
         # PHASE 1: LLM fitted translation — concision calibrated to TTS speaking rate.
         # Skipped when "Disable Fitted Translation" is checked: we go straight to a
@@ -1292,38 +1283,18 @@ def step4_translate(target_lang, original_title="", original_desc="", whisper_on
             progress(0.6, "Phase 3/3: Natural full translation (unconstrained)...")
             reformulator.translate_normal(state.translated_segments, source_lang, target_lang_code)
 
-    if original_title.strip():
-        if whisper_only:
-            try:
-                translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
-            except Exception as e:
-                print(f"Title translation error: {e}")
-                translated_title = original_title
-        else:
-            try:
-                translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
-            except Exception:
-                try:
-                    translated_title = translator.translate_text(original_title, src_lang_name, tgt_lang_name)
-                except Exception as e:
-                    print(f"Title translation error: {e}")
-                    translated_title = original_title
-    if original_desc.strip():
-        if whisper_only:
-            try:
-                translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
-            except Exception as e:
-                print(f"Description translation error: {e}")
-                translated_desc = original_desc
-        else:
-            try:
-                translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
-            except Exception:
-                try:
-                    translated_desc = translator.translate_text(original_desc, src_lang_name, tgt_lang_name)
-                except Exception as e:
-                    print(f"Description translation error: {e}")
-                    translated_desc = original_desc
+    if not whisper_only and original_title.strip():
+        try:
+            translated_title = reformulator.translate_text(original_title, source_lang, target_lang_code)
+        except Exception as e:
+            print(f"Title translation error: {e}")
+            translated_title = original_title
+    if not whisper_only and original_desc.strip():
+        try:
+            translated_desc = reformulator.translate_text(original_desc, source_lang, target_lang_code)
+        except Exception as e:
+            print(f"Description translation error: {e}")
+            translated_desc = original_desc
 
     state.video_info['translated_title'] = translated_title
     state.video_info['translated_description'] = translated_desc
@@ -1700,8 +1671,13 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
                 voice_path = state.video_info['vocals']
                 print(f"Using original vocals for cloning: {voice_path}")
         elif clone_requested and voice_mode == "Clone from file" and voice_file:
-            voice_path = voice_file
-            print(f"Using uploaded voice file for cloning: {voice_path}")
+            # gr.File may hand back a str path or a file-like object with .name.
+            voice_path = voice_file.name if hasattr(voice_file, 'name') else voice_file
+            if not voice_path or not os.path.exists(str(voice_path)):
+                print(f"[WARN] Voice sample file not found: {voice_path!r} — using the default voice instead.")
+                voice_path = None
+            else:
+                print(f"Using uploaded voice file for cloning: {voice_path}")
         else:
             print("Using default TTS voice (no cloning).")
 
@@ -1718,7 +1694,8 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
             progress(0.2, "[Never Cut] Generating all audio at natural speed...")
             synced, drift_info = time_sync.sync_all_never_cut(
                 state.translated_segments, target_lang,
-                state.video_info['duration'], voice_mapping=None, gender=default_voice_gender
+                state.video_info['duration'], voice_mapping=None, gender=default_voice_gender,
+                voice_path=voice_path
             )
             state.synced_segments = synced
             if not state.keep_models:
@@ -1752,7 +1729,8 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
             progress(0.3, f"Generating audio ({len(state.translated_segments)} segments)...")
             state.synced_segments, sync_stats = time_sync.sync_all(
                 state.translated_segments, target_lang, voice_mapping=None,
-                total_duration=state.video_info.get('duration'), gender=default_voice_gender
+                total_duration=state.video_info.get('duration'), gender=default_voice_gender,
+                voice_path=voice_path
             )
             
             if not state.keep_models:
@@ -2200,7 +2178,11 @@ def step5_bulk_run(target_langs, voice_mode, voice_file, never_cut, output_type,
         else:
             initial_voice_path = state.video_info['vocals']
     elif bulk_clone and voice_mode == "Clone from file" and voice_file:
-        initial_voice_path = voice_file
+        # gr.File may hand back a str path or a file-like object with .name.
+        initial_voice_path = voice_file.name if hasattr(voice_file, 'name') else voice_file
+        if not initial_voice_path or not os.path.exists(str(initial_voice_path)):
+            print(f"[BULK] Voice sample file not found: {initial_voice_path!r} — using the default voice instead.")
+            initial_voice_path = None
 
     tts_engine.load(ref_audio_path=initial_voice_path) # Load once with correct model type
     
@@ -2220,7 +2202,8 @@ def step5_bulk_run(target_langs, voice_mode, voice_file, never_cut, output_type,
             if never_cut:
                 progress(base_progress + prog_step * 0.4, f"[{target_lang}] Audio sync (Never Cut)...")
                 synced, _ = time_sync.sync_all_never_cut(
-                    translated_for_lang, iso, state.video_info['duration'], voice_mapping=None, gender=default_voice_gender
+                    translated_for_lang, iso, state.video_info['duration'], voice_mapping=None, gender=default_voice_gender,
+                    voice_path=initial_voice_path
                 )
                 
                 progress(base_progress + prog_step * 0.7, f"[{target_lang}] Assembling audio...")
@@ -2238,7 +2221,8 @@ def step5_bulk_run(target_langs, voice_mode, voice_file, never_cut, output_type,
                 progress(base_progress + prog_step * 0.5, f"[{target_lang}] Generating audio...")
                 synced, _ = time_sync.sync_all(
                     translated_for_lang, iso, voice_mapping=None,
-                    total_duration=state.video_info.get('duration'), gender=default_voice_gender
+                    total_duration=state.video_info.get('duration'), gender=default_voice_gender,
+                    voice_path=initial_voice_path
                 )
                 
                 progress(base_progress + prog_step * 0.7, f"[{target_lang}] Assembling audio...")
@@ -4746,9 +4730,9 @@ with gr.Blocks(title="ZastTranslate") as app:
                         btn_transcribe = gr.Button("▶️ Run Transcription", interactive=False, variant="primary", elem_id="btn_run_transcription")
                     with gr.Row():
                         whisper_only_cb = gr.Checkbox(
-                            label="🎙️ Whisper only (skip LLM translation — use fast NLLB)",
+                            label="🎙️ Whisper only (skip all AI translation)",
                             value=False,
-                            info="Transcribe normally, but translate with the lightweight NLLB model instead of the heavy LLM. Saves VRAM and never loads the LLM for translation."
+                            info="Transcribe normally, then skip translation entirely — no LLM and no NLLB model is loaded. Translation columns keep the original text; import your own translated SRT on the Translation tab if needed. Fastest, zero-VRAM option."
                         )
                         skip_seo_cb = gr.Checkbox(
                             label="🚫 Skip YouTube SEO studio",
