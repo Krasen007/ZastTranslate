@@ -40,7 +40,6 @@ remain briefly documented for traceability.
 - **Approach:** add a UI toggle (Off / Soft / Burn) on the Dubbing tab; pass
   the fitted SRT + target ISO language (drop the `fre` default once wired).
 
-
 ### 6. Dependency pinning for reproducible installs
 - `requirements.txt` pins versions now, but `git+https://github.com/m-bain/whisperX.git`
   and `faster-whisper` remain floating relative to their upstream commits.
@@ -52,12 +51,6 @@ remain briefly documented for traceability.
   `HF_HOME` / `HUGGINGFACE_HUB_CACHE` when imported.
 - **Approach:** move into the respective `load()` paths (or a single
   `config.configure_hf_cache()` called from `app.py` main).
-
-### 8. Silent `except Exception: pass` audit
-- Remaining in `downloader.py`, `separator.py`, app dataframe parsing, and
-  `hybrid.py` path helpers.
-- **Approach:** log at `WARNING` with file/segment context (one-line helper
-  `_warn_ctx(msg, e)`), keep `pass` only for genuinely optional cleanup.
 
 ## Low priority / hygiene
 
@@ -71,14 +64,8 @@ remain briefly documented for traceability.
 
 
 ## Recently completed
-
-- **Tab 2 "Whisper only"** — the checkbox used the legacy NLLB `Translator`
-  for translation. It now skips translation entirely (original text mirrored
-  into the translation columns, no LLM/NLLB loaded); see item 5.
-- **Tab 4 "Clone from file" used the bundled default voice** — `time_sync.
-  sync_all` / `sync_all_never_cut` never received the reference path
-  (`voice_mapping=None`), so BgTTS resolved `sample_female_bg1.wav` for every
-  segment. `voice_path` is now forwarded from Tab 4 and Bulk Mode, `voice_file`
-  is normalized (str vs file object) with an existence check, and the BgTTS
-  backend remembers the `load()`-time reference (like VoxCPM2's
-  `default_ref_audio`) as a fallback.
+### 8. Silent `except Exception: pass` audit
+- Remaining in `downloader.py`, `separator.py`, app dataframe parsing, and
+  `hybrid.py` path helpers.
+- **Approach:** log at `WARNING` with file/segment context (one-line helper
+  `_warn_ctx(msg, e)`), keep `pass` only for genuinely optional cleanup.

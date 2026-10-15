@@ -60,6 +60,7 @@ import re
 import sys
 from config import *
 from config import NEVER_CUT_WARNING
+from modules.utils import _warn_ctx
 from modules.downloader import VideoDownloader
 from modules.separator import VocalSeparator
 from modules.transcriber import Transcriber
@@ -904,8 +905,8 @@ def step2_clean_transcription(df_data, lang_source, progress=gr.Progress()):
                 text = str(row[2])
                 if text.strip():
                     new_segments.append({"start": start, "end": end, "text": text})
-            except Exception:
-                pass
+            except Exception as e:
+                _warn_ctx("skipping unparseable dataframe row", e, row=row)
         if new_segments:
             state.segments = new_segments
 
@@ -7072,6 +7073,35 @@ with gr.Blocks(title="ZastTranslate") as app:
 if __name__ == "__main__":
     import os
     import sys
+    import asyncio
+
+    # Silence a known, benign Windows asyncio ProactorEventLoop noise:
+    # "ConnectionResetError: [WinError 10054] ... _ProactorBasePipeTransport._call_connection_lost()"
+    # raised inside an event-loop cleanup callback AFTER a subprocess (e.g. FFmpeg) has already
+    # finished and written its output. It does not affect the rendered video and is safe to ignore.
+    _zast_policy = asyncio.get_event_loop_policy()
+    try:
+        _zast_loop = _zast_policy.get_event_loop()
+    except RuntimeError:
+        _zast_loop = asyncio.new_event_loop()
+        _zast_policy.set_event_loop(_zast_loop)
+    _zast_orig_handler = _zast_loop.get_exception_handler()
+
+    def _zast_asyncio_exception_handler(loop, context):
+        exc = context.get("exception")
+        if (
+            exc is not None
+            and isinstance(exc, ConnectionResetError)
+            and getattr(exc, "winerror", None) == 10054
+        ):
+            return  # benign pipe-transport cleanup noise; FFmpeg already completed successfully
+        if _zast_orig_handler is not None:
+            _zast_orig_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    _zast_loop.set_exception_handler(_zast_asyncio_exception_handler)
+
     port = int(os.environ.get("GRADIO_SERVER_PORT", 7860))
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])

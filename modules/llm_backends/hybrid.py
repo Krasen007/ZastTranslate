@@ -1,6 +1,7 @@
 import os
 import gc
 import torch
+from modules.utils import _warn_ctx
 from .base import LLMBackend
 from .local_causal import LocalCausalLMBackend
 from .llama_cpp_backend import LlamaCppBackend
@@ -18,8 +19,8 @@ def get_custom_model_path() -> str:
         if os.path.isfile(_CUSTOM_PATH_FILE):
             with open(_CUSTOM_PATH_FILE, "r", encoding="utf-8") as f:
                 return (f.read() or "").strip().strip('"').strip("'")
-    except Exception:
-        pass
+    except Exception as e:
+        _warn_ctx("reading custom LLM path file", e, path=_CUSTOM_PATH_FILE)
     return ""
 
 

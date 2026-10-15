@@ -2,10 +2,30 @@ import subprocess
 import os
 import json
 import gc
+import logging
 import torch
 import librosa
 import soundfile as sf
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_ctx(msg: str, e: BaseException, **ctx) -> None:
+    """Log a swallowed exception at WARNING with optional file/segment context.
+
+    Use this instead of silent ``except Exception: pass`` so that genuinely
+    recoverable failures are still visible in the console/logs.
+
+    Example:
+        try:
+            start = float(row[0])
+        except Exception as e:
+            _warn_ctx("skipping unparseable dataframe row", e, row=row)
+    """
+    ctx_str = " | ".join(f"{k}={v!r}" for k, v in ctx.items() if v is not None)
+    detail = f" [{ctx_str}]" if ctx_str else ""
+    logger.warning(f"{msg}: {type(e).__name__}: {e}{detail}")
 
 def get_exact_duration(filepath):
     """Return the EXACT duration in seconds via ffprobe (high-precision float).
