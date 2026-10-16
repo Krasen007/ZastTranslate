@@ -218,7 +218,7 @@ def _get_empty_segments_html():
     b64_str = base64.b64encode(b"[]").decode('utf-8')
     return f'<div id="segments_json_data" style="display:none;">{b64_str}</div>'
 
-def find_segment_audio_path(start, lang=None, never_cut=None):
+def find_segment_audio_path(start, lang=None, never_cut=None, voice_tag="default"):
     """Find the cached synced audio path for a given segment start time, supporting multiple naming conventions."""
     try:
         f_start = float(start)
@@ -246,31 +246,19 @@ def find_segment_audio_path(start, lang=None, never_cut=None):
     prefixes = ["nc_seg_", "seg_"] if never_cut else ["seg_", "nc_seg_"]
 
     for s_str in start_strs:
-        # 1. Check with candidate language tags
         for pfx in prefixes:
             for t in tags:
-                p = os.path.join(TEMP_DIR, f"{pfx}{t}_{s_str}_synced.wav")
+                p = os.path.join(TEMP_DIR, f"{pfx}{t}_{voice_tag}_{s_str}_synced.wav")
                 if os.path.exists(p):
                     return p
 
-        # 2. Check without language tag
-        for pfx in prefixes:
-            p = os.path.join(TEMP_DIR, f"{pfx}{s_str}_synced.wav")
-            if os.path.exists(p):
-                return p
-
-        # 3. Fallback: check any file matching this start time in TEMP_DIR
-        for pfx in prefixes:
-            matches = glob.glob(os.path.join(TEMP_DIR, f"{pfx}*_{s_str}_synced.wav"))
-            if matches:
-                return matches[0]
-
     return None
 
-def _build_dubbing_df_data():
+def _build_dubbing_df_data(voice_tag=None, never_cut=None):
     if not state.translated_segments:
         return []
     target_lang = state.video_info.get('target_language', 'fr') if state.video_info else 'fr'
+    voice_tag = voice_tag or getattr(state, "last_voice_tag", "default")
     
     rows = []
     for idx, seg in enumerate(state.translated_segments):
@@ -279,7 +267,9 @@ def _build_dubbing_df_data():
         start = seg.get("start", 0.0)
         end = seg.get("end", 0.0)
         
-        audio_path = find_segment_audio_path(start, lang=target_lang)
+        audio_path = find_segment_audio_path(
+            start, lang=target_lang, never_cut=never_cut, voice_tag=voice_tag
+        )
         status = "Ready" if (audio_path and os.path.exists(audio_path)) else "Not Generated"
             
         rows.append([
@@ -332,7 +322,25 @@ def load_segment_to_editor(*args, **kwargs):
     target_lang = state.video_info.get('target_language', 'fr') if state.video_info else 'fr'
     
     # Check if the audio file already exists in cache
-    audio_path = find_segment_audio_path(seg['start'], lang=target_lang, never_cut=never_cut)
+    voice_path = None
+    if is_clone_requested(voice_mode) and _caps_can_clone(
+        tts_engine.capabilities,
+        (state.video_info.get('target_language_name') or target_lang) if state.video_info else target_lang,
+    ):
+        if voice_mode == "Clone from original" and state.video_info:
+            for key in ("ref_audio_extracted", "vocals"):
+                candidate = state.video_info.get(key)
+                if candidate and os.path.exists(candidate):
+                    voice_path = candidate
+                    break
+        elif voice_mode == "Clone from file" and voice_file:
+            candidate = voice_file.name if hasattr(voice_file, "name") else voice_file
+            if candidate and os.path.exists(str(candidate)):
+                voice_path = candidate
+    voice_tag = time_sync._voice_cache_tag(voice_path)
+    audio_path = find_segment_audio_path(
+        seg['start'], lang=target_lang, never_cut=never_cut, voice_tag=voice_tag
+    )
         
     if not audio_path or not os.path.exists(audio_path):
         audio_path = None
@@ -367,6 +375,7 @@ class AppState:
         self.seo_package = None
         self.blog_package = None
         self.detected_shorts = []
+        self.last_voice_tag = "default"
         
 state = AppState()
 
@@ -966,7 +975,7 @@ def step2_clean_transcription(df_data, lang_source, progress=gr.Progress()):
     if df_data is not None:
         rows = _dataframe_to_rows(df_data)
         new_segments = []
-        for row in rows:
+        for row_index, row in enumerate(rows):
             try:
                 start = float(row[0])
                 end = float(row[1])
@@ -974,7 +983,7 @@ def step2_clean_transcription(df_data, lang_source, progress=gr.Progress()):
                 if text.strip():
                     new_segments.append({"start": start, "end": end, "text": text})
             except Exception as e:
-                _warn_ctx("skipping unparseable dataframe row", e, row=row)
+                _warn_ctx("skipping unparseable dataframe row", e, row_index=row_index)
         if new_segments:
             state.segments = new_segments
 
@@ -1360,7 +1369,7 @@ def step3b_import_translation_srt(srt_file, target_lang):
 
     Lets a user skip the LLM translation entirely and go straight to Dubbing with
     their own translated subtitles. The imported cues populate the Translation grid
-    (Start / End / Original / Translation / Fitted) and unlock Validate → Dubbing,
+    (Start / End / Original / Translation) and unlock Validate → Dubbing,
     exactly like a completed translation.
     """
     if srt_file is None:
@@ -1450,7 +1459,7 @@ def step3b_import_translation_srt(srt_file, target_lang):
         f"Review below, then click 'Validate Translation ✅' to unlock Dubbing."
     )
 
-    return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation (Fitted)", gr.update(interactive=True)
+    return status_msg, data, _get_segments_json_html(), "", "", srt_path, "Translation", gr.update(interactive=True)
 
 def step5_save_translation(data, translated_title="", translated_desc=""):
     rows = _dataframe_to_rows(data)
@@ -1473,6 +1482,7 @@ def step5_save_translation(data, translated_title="", translated_desc=""):
             if translation:
                 state.translated_segments[i]['normal_text'] = translation
                 state.translated_segments[i]['translated_text'] = translation
+                state.translated_segments[i].pop('tts_text', None)
             count += 1
             
     if count == 0:
@@ -1667,6 +1677,9 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
         else:
             print("Using default TTS voice (no cloning).")
 
+        voice_tag = time_sync._voice_cache_tag(voice_path)
+        state.last_voice_tag = voice_tag
+
         # Detect target language from translated segments
         target_lang = state.video_info.get('target_language', 'fr') if state.video_info else 'fr'
 
@@ -1756,12 +1769,16 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
         shutil.copy2(mixed_audio, final_audio_export)
         
         if state.video_info.get('is_audio_only', False):
-            df_data = _build_dubbing_df_data()
+            df_data = _build_dubbing_df_data(voice_tag=voice_tag, never_cut=never_cut)
             return status, gr.update(visible=False, value=None), mixed_audio, gr.update(visible=False, value=None), gr.update(visible=True, value=mixed_audio), df_data, _get_segments_json_html(), None, final_audio_export, gr.update(interactive=True)
         else:
             progress(0.9, "Assembling final video...")
             final_video = os.path.join(OUTPUT_DIR, f"final_video_{iso}.mp4")
             fitted_srt = os.path.join(OUTPUT_DIR, f"fitted_{iso}.srt")
+            srt_parser.segments_to_clean_srt(
+                state.translated_segments, fitted_srt, text_key="translated_text",
+                lang_code=tgt_lang, clean_fillers=False
+            )
             srt_arg = fitted_srt if os.path.exists(fitted_srt) else None
             mode = (subtitle_mode or "Off").strip().lower()
             if mode not in ("off", "soft", "burn"):
@@ -1779,7 +1796,7 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
                 final_video,
                 **sub_kwargs
             )
-            df_data = _build_dubbing_df_data()
+            df_data = _build_dubbing_df_data(voice_tag=voice_tag, never_cut=never_cut)
             return status, gr.update(visible=True, value=final_video), mixed_audio, gr.update(visible=True, value=final_video), gr.update(visible=False, value=None), df_data, _get_segments_json_html(), final_video, final_audio_export, gr.update(interactive=True)
     except Exception as e:
         import traceback
@@ -1844,6 +1861,7 @@ def step6_regenerate_segment(
     # Update text to speak (full translation)
     seg["translated_text"] = text
     seg["normal_text"] = text
+    seg.pop("tts_text", None)
         
     # Update transcription state start/end
     if idx < len(state.segments):
@@ -1882,6 +1900,8 @@ def step6_regenerate_segment(
         voice_path = voice_file.name if hasattr(voice_file, 'name') else voice_file
 
     print(f"[REGEN] row_idx={row_idx_1based}, voice_mode='{voice_mode}', voice_path='{voice_path}'")
+    voice_tag = time_sync._voice_cache_tag(voice_path)
+    state.last_voice_tag = voice_tag
     tts_engine.load(ref_audio_path=voice_path)
     
     try:
@@ -1903,7 +1923,7 @@ def step6_regenerate_segment(
             
         if never_cut:
             tag = str(target_lang_code).lower().strip()[:3]
-            nc_synced_path = os.path.join(TEMP_DIR, f"nc_seg_{tag}_{new_start:.2f}_synced.wav")
+            nc_synced_path = os.path.join(TEMP_DIR, f"nc_seg_{tag}_{voice_tag}_{new_start:.2f}_synced.wav")
             shutil.copy2(seg_audio_path, nc_synced_path)
             seg_audio_path = nc_synced_path
             
@@ -1919,7 +1939,7 @@ def step6_regenerate_segment(
             tts_engine.cleanup()
             reformulator.cleanup()
             
-        df_data = _build_dubbing_df_data()
+        df_data = _build_dubbing_df_data(voice_tag=voice_tag, never_cut=never_cut)
         
         # Default updates if assembly is not ready
         video_update = gr.update()
@@ -4164,7 +4184,7 @@ BLOCKS_JS = """
                 const checked = document.querySelector("#subtitle_selection input:checked");
                 if (checked) {
                     const val = checked.value;
-                    if (val === "None" || val === "Original" || val === "Translation (Fitted)" || val === "Translation (Normal)") {
+                    if (val === "None" || val === "Original" || val === "Translation" || val === "Translation (Fitted)" || val === "Translation (Normal)") {
                         mode = val;
                     } else {
                         const label = checked.closest("label");
@@ -4211,7 +4231,7 @@ BLOCKS_JS = """
                         if (currentTime >= seg.start && currentTime <= seg.end) {
                             if (mode === "Original") {
                                 activeText = seg.text || "";
-                            } else if (mode === "Translation (Fitted)") {
+                            } else if (mode === "Translation" || mode === "Translation (Fitted)") {
                                 activeText = seg.translated_text || "";
                             } else if (mode === "Translation (Normal)") {
                                 activeText = seg.normal_text || seg.translated_text || "";
@@ -4599,7 +4619,7 @@ with gr.Blocks(title="ZastTranslate") as app:
             
             # Subtitle Selection
             subtitle_selection = gr.Radio(
-                choices=["None", "Original", "Translation (Fitted)", "Translation (Normal)"],
+                choices=["None", "Original", "Translation", "Translation (Fitted)", "Translation (Normal)"],
                 value="None",
                 label="Preview Subtitles",
                 elem_id="subtitle_selection",
@@ -5574,6 +5594,7 @@ with gr.Blocks(title="ZastTranslate") as app:
                         "- **Preview Subtitles** — Select which subtitles to overlay during playback:\n"
                         "  - `None` — Hide subtitles.\n"
                         "  - `Original` — Show original transcribed speech.\n"
+                        "  - `Translation` — Show translated subtitle text.\n"
                         "  - `Translation (Fitted)` — Show concise fitted translation (used for dubbing).\n"
                         "  - `Translation (Normal)` — Show full natural translation.\n"
                         "- **Subtitle Overlay Box** — Subtitles are rendered dynamically and synchronized in real-time with the player's playhead.\n"
@@ -6871,15 +6892,11 @@ with gr.Blocks(title="ZastTranslate") as app:
             trans_data_df = []
             for seg in state.translated_segments:
                 normal_text = seg.get("normal_text", seg.get("translated_text", ""))
-                fitted = seg.get("translated_text", "")
-                duration = seg.get("end", 0.0) - seg.get("start", 0.0)
-                status = "✅"
                 trans_data_df.append([
                     round(seg.get('start', 0.0), 2), 
                     round(seg.get('end', 0.0), 2), 
                     seg.get('text', ''), 
-                    normal_text, 
-                    f"{status} {fitted}"
+                    normal_text
                 ])
             trans_df_update = trans_data_df
                 
@@ -6898,7 +6915,7 @@ with gr.Blocks(title="ZastTranslate") as app:
         # Subtitles mode & export files
         sub_mode = "None"
         if has_translated:
-            sub_mode = "Translation (Fitted)"
+            sub_mode = "Translation"
         elif has_segments:
             sub_mode = "Original"
 

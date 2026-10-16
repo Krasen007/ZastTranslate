@@ -69,7 +69,7 @@ def test_import_translation_srt():
 
         assert "imported" in status.lower(), f"Unexpected status: {status}"
         assert len(data) == 2, f"Expected 2 rows, got {len(data)}"
-        # Grid columns: Start, End, Original, Translation, Fitted
+        # Grid columns: Start, End, Original, Translation
         assert data[0][2] == "Bonjour a tous", f"Original text not preserved: {data[0]}"
         assert data[0][3] == "Hello everyone here.", f"Translation not set: {data[0]}"
         # State populated so Validate -> Dubbing works.
@@ -112,7 +112,7 @@ def test_save_translation_empty_grid_fallback():
     for empty in ([], None):
         # Returns 5: status, continue-update, json_html, dubbing df, dubbing-btn update
         status, synth_upd, json_html, df_data, _dub_btn = app.step5_save_translation(
-            empty, "Fitted Translation", "", ""
+            empty, "", ""
         )
         assert "No translation data found" not in status, (
             f"Fallback failed for payload {empty!r}: {status}"
@@ -125,7 +125,7 @@ def test_save_translation_empty_grid_fallback():
 def test_save_translation_truly_empty_still_errors():
     import app
     app.state.translated_segments = []
-    status, _, _, _, _ = app.step5_save_translation([], "Fitted Translation", "", "")
+    status, _, _, _, _ = app.step5_save_translation([], "", "")
     assert "No translation data found" in status, f"Expected error when nothing to save: {status}"
     print("[OK] step5_save_translation still errors when there is genuinely no data")
 

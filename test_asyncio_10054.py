@@ -18,6 +18,7 @@ transport whose socket peer is gone, and asserts:
      completes teardown (socket cleared, _called_connection_lost set).
 """
 import asyncio
+import pytest
 import sys
 import traceback
 
@@ -61,6 +62,7 @@ def _make_transport_like(loop):
     return obj
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ProactorEventLoop behavior")
 def test_unpatched_raises():
     """The ORIGINAL method must raise on a reset peer (proves the bug is real)."""
     import app  # noqa: F401  (stashes the original as app._zast_orig_call_connection_lost)
@@ -70,18 +72,17 @@ def test_unpatched_raises():
     loop = asyncio.new_event_loop()
     try:
         obj = _make_transport_like(loop)
-        try:
+        with pytest.raises(ConnectionResetError) as exc_info:
             orig(obj, None)
-        except ConnectionResetError as e:
-            assert getattr(e, "winerror", None) == 10054, f"unexpected winerror: {e}"
-            print(f"[OK] unpatched _call_connection_lost raises ConnectionResetError winerror={e.winerror}")
-            return True
-        print("[FAIL] unpatched method did NOT raise; test harness is wrong.")
-        return False
+        assert getattr(exc_info.value, "winerror", None) == 10054, (
+            f"unexpected winerror: {exc_info.value}"
+        )
+        print(f"[OK] unpatched _call_connection_lost raises ConnectionResetError winerror={exc_info.value.winerror}")
     finally:
         loop.close()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ProactorEventLoop behavior")
 def test_patched_swallows():
     """The patched method must NOT raise, and must still complete teardown."""
     import app  # noqa: F401  (applies the patch at import time)
@@ -101,32 +102,27 @@ def test_patched_swallows():
     loop = asyncio.new_event_loop()
     try:
         obj = _make_transport_like(loop)
-        try:
-            patched(obj, None)
-        except Exception as e:
-            print(f"[FAIL] patched method still raised: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            return False
+        patched(obj, None)
 
         assert obj._sock is None, "socket not cleared on the swallow path"
         assert obj._called_connection_lost is True, (
             "_called_connection_lost not set; callback could re-enter"
         )
         print("[OK] patched _call_connection_lost swallows WinError 10054 and completes teardown")
-        return True
     finally:
         loop.close()
 
 
 if __name__ == "__main__":
     print("=== WinError 10054 suppression test ===")
-    ok_unpatched = test_unpatched_raises()
-    ok_patched = test_patched_swallows()
-    print("=== summary ===")
-    print(f"unpatched-raises (or skip): {ok_unpatched}")
-    print(f"patched-swallows: {ok_patched}")
-    if ok_unpatched and ok_patched:
-        print("[PASS] WinError 10054 noise is suppressed at the transport layer.")
+    if sys.platform != "win32":
+        print("[SKIP] Windows ProactorEventLoop behavior is not available on this platform.")
         sys.exit(0)
-    print("[FAIL]")
-    sys.exit(1)
+    try:
+        test_unpatched_raises()
+        test_patched_swallows()
+    except AssertionError:
+        traceback.print_exc()
+        sys.exit(1)
+    print("[PASS] WinError 10054 noise is suppressed at the transport layer.")
+    sys.exit(0)

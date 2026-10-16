@@ -34,37 +34,15 @@ def _to_stereo_44k(src_path, dst_path):
     ])
 
 
-def _loop_background_on_disk(bg_norm_path, voice_frames, dst_path):
-    """Loop a short background on disk to cover ``voice_frames`` frames.
-
-    Uses ffmpeg ``-stream_loop`` so tiling happens in the ffmpeg process —
-    never as an ``np.tile`` in RAM.
-    """
-    bg_info = sf.info(bg_norm_path)
-    if bg_info.frames <= 0:
-        raise ValueError(f"Background audio has no frames: {bg_norm_path}")
-    loops = int((voice_frames + bg_info.frames - 1) // bg_info.frames)
-    duration_s = voice_frames / float(OUTPUT_SAMPLE_RATE)
-    _run_ffmpeg([
-        "-stream_loop", str(max(loops, 0)),
-        "-i", bg_norm_path,
-        "-t", f"{duration_s:.3f}",
-        "-ar", str(OUTPUT_SAMPLE_RATE),
-        "-ac", str(OUTPUT_CHANNELS),
-        "-c:a", "pcm_s16le",
-        dst_path,
-    ])
-
-
 class AudioMixer:
     def mix(self, voice_path, background_path, output_path,
             voice_volume_db=0, bg_volume_db=-6, ducking=False,
             duck_extra_db=6.0, block_frames=_BLOCK_FRAMES):
         """
         Mixing is block-wise: both inputs are normalized to 44.1 kHz
-        stereo on disk via ffmpeg (no full-file librosa.load), a short
-        background is looped on disk via -stream_loop (no np.tile in
-        RAM), then soundfile streams both tracks in ~30 s blocks.
+        stereo on disk via ffmpeg (no full-file librosa.load), then
+        soundfile streams both tracks in ~30 s blocks. A short background
+        is looped from its normalized file inside each block.
         ducking=True applies extra bg attenuation where voice is active.
         """
         if not os.path.exists(voice_path):
@@ -81,21 +59,18 @@ class AudioMixer:
         tmp_dir = tempfile.mkdtemp(prefix="mix_")
         voice_norm = os.path.join(tmp_dir, "voice_44k.wav")
         bg_norm = os.path.join(tmp_dir, "bg_44k.wav")
-        bg_looped = os.path.join(tmp_dir, "bg_looped.wav")
         try:
             _to_stereo_44k(voice_path, voice_norm)
             _to_stereo_44k(background_path, bg_norm)
             target_frames = sf.info(voice_norm).frames
             if target_frames <= 0:
                 raise ValueError(f"Voice track empty: {voice_path}")
-            bg_mix_path = bg_norm
-            if sf.info(bg_norm).frames < target_frames:
-                _loop_background_on_disk(bg_norm, target_frames, bg_looped)
-                bg_mix_path = bg_looped
+            if sf.info(bg_norm).frames <= 0:
+                raise ValueError(f"Background audio has no frames: {background_path}")
 
             cur_duck = 1.0
             with sf.SoundFile(voice_norm, "r") as vf, \
-                    sf.SoundFile(bg_mix_path, "r") as bf, \
+                    sf.SoundFile(bg_norm, "r") as bf, \
                     sf.SoundFile(output_path, "w",
                                  samplerate=OUTPUT_SAMPLE_RATE,
                                  channels=OUTPUT_CHANNELS,
@@ -103,17 +78,19 @@ class AudioMixer:
                 while True:
                     v_block = vf.read(block_frames, dtype="float32",
                                       always_2d=True)
-                    b_block = bf.read(block_frames, dtype="float32",
-                                      always_2d=True)
                     if len(v_block) == 0:
                         break
                     n = len(v_block)
-                    if len(b_block) < n:
-                        pad = np.zeros((n - len(b_block), OUTPUT_CHANNELS),
-                                       dtype=np.float32)
-                        b_block = np.concatenate([b_block, pad], axis=0)
-                    else:
-                        b_block = b_block[:n]
+                    b_block = np.empty((n, OUTPUT_CHANNELS), dtype=np.float32)
+                    filled = 0
+                    while filled < n:
+                        chunk = bf.read(n - filled, dtype="float32",
+                                        always_2d=True)
+                        if len(chunk) == 0:
+                            bf.seek(0)
+                            continue
+                        b_block[filled:filled + len(chunk)] = chunk
+                        filled += len(chunk)
                     if ducking:
                         rms = float(np.sqrt(np.mean(v_block ** 2) + 1e-12))
                         tgt = duck_lin if rms > _DUCK_THRESHOLD_RMS else 1.0
@@ -126,7 +103,7 @@ class AudioMixer:
                     np.clip(mixed, -1.0, 1.0, out=mixed)
                     out.write(mixed)
         finally:
-            for p in (voice_norm, bg_norm, bg_looped):
+            for p in (voice_norm, bg_norm):
                 try:
                     if os.path.exists(p):
                         os.remove(p)

@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 
 # Nom du projet
 APP_NAME = "ZastTranslate"
@@ -58,6 +59,7 @@ def get_device() -> str:
     return _DEVICE_CACHE
 
 
+@lru_cache(maxsize=1)
 def get_gpu_info():
     """Return (name, vram_gb, vram_str); safe on CPU-only machines."""
     try:
