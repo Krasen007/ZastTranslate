@@ -117,6 +117,7 @@ __all__ = [
     "MODELS_DIR", "VOICES_DIR", "DOWNLOADS_DIR", "ensure_dirs",
     "get_device", "get_gpu_info", "configure_hf_cache", "DEVICE",
     "GPU_NAME", "GPU_VRAM_GB", "GPU_VRAM",
+    "LANGUAGES", "MAX_SPEED_FACTOR",
 ]
 
 # Synchronization constants
