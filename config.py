@@ -1,20 +1,5 @@
 import os
 
-# Reduce CUDA memory fragmentation on tight GPUs (e.g. 8 GB).
-# The PyTorch OOM message suggests PYTORCH_ALLOC_CONF=expandable_segments:True, but
-# that backend is NOT compiled into the Windows torch build (it emits "expandable_
-# segments not supported on this platform"). max_split_size_mb IS supported and
-# solves the same problem: it stops the caching allocator from splintering large
-# free blocks into tiny unusable ones, which otherwise shows up as
-# "reserved but unallocated" memory and makes the LLM loader's warmup allocation
-# fail with torch.OutOfMemoryError even though the NF4 model (~4.5 GB) fits in 8 GB.
-# Must be set before the first CUDA allocation. The legacy PYTORCH_CUDA_ALLOC_CONF
-# name is set too so older torch builds (torch.js pins 2.8) pick it up as well.
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "max_split_size_mb:128")
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
-
-import torch
-
 # Nom du projet
 APP_NAME = "ZastTranslate"
 APP_VERSION = "1.21"
@@ -29,9 +14,75 @@ VOICES_DIR = os.path.join(BASE_DIR, "voices")
 # files here survive restarts so re-importing the same URL skips the download.
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 
-# Creer les dossiers s'ils n'existent pas
-for d in [TEMP_DIR, OUTPUT_DIR, MODELS_DIR, VOICES_DIR, DOWNLOADS_DIR]:
-    os.makedirs(d, exist_ok=True)
+# --- Lazy runtime state (no torch import / makedirs at import time) ---
+# All 35 modules import this file, so importing torch (~1 s + CUDA probe)
+# and creating directories on every import is wasteful. Heavy work happens
+# via ensure_dirs()/get_device()/get_gpu_info(), called once from app.py
+# main. DEVICE / GPU_* stay available as module attributes via __getattr__.
+
+
+def ensure_dirs() -> None:
+    """Create working directories. Called once from app.py main."""
+    for d in [TEMP_DIR, OUTPUT_DIR, MODELS_DIR, VOICES_DIR, DOWNLOADS_DIR]:
+        os.makedirs(d, exist_ok=True)
+
+
+def _load_torch():
+    import torch as _torch
+    # Reduce CUDA fragmentation on tight GPUs (e.g. 8 GB):
+    # max_split_size_mb stops the caching allocator splintering large
+    # blocks (expandable_segments is NOT compiled into Windows torch).
+    # Must precede the first CUDA allocation; legacy name kept for
+    # older torch builds (torch.js pins 2.8).
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "max_split_size_mb:128")
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128")
+    return _torch
+
+
+def get_device() -> str:
+    """Return 'cuda' if available else 'cpu' (cached, lazy torch import)."""
+    global _DEVICE_CACHE
+    try:
+        return _DEVICE_CACHE
+    except NameError:
+        pass
+    try:
+        torch = _load_torch()
+        _DEVICE_CACHE = "cuda" if torch.cuda.is_available() else "cpu"
+        if _DEVICE_CACHE == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print("NVIDIA TF32 Acceleration Enabled (RTX 3000/4000+ speedup)")
+    except Exception:
+        _DEVICE_CACHE = "cpu"
+    return _DEVICE_CACHE
+
+
+def get_gpu_info():
+    """Return (name, vram_gb, vram_str); safe on CPU-only machines."""
+    try:
+        torch = _load_torch()
+        if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+            gb = float(torch.cuda.get_device_properties(0).total_memory / 1024**3)
+            return name, gb, f"{gb:.1f} GB"
+    except Exception:
+        pass
+    return "None", 0.0, "N/A"
+
+
+def __getattr__(name):
+    # Backward-compat lazy aliases: `from config import DEVICE` keeps
+    # working (module __getattr__ is consulted when normal lookup fails).
+    if name == "DEVICE":
+        return get_device()
+    if name == "GPU_NAME":
+        return get_gpu_info()[0]
+    if name == "GPU_VRAM_GB":
+        return get_gpu_info()[1]
+    if name == "GPU_VRAM":
+        return get_gpu_info()[2]
+    raise AttributeError(f"module 'config' has no attribute {name!r}")
 
 
 def configure_hf_cache() -> None:
@@ -54,22 +105,17 @@ def configure_hf_cache() -> None:
     os.environ["HF_HOME"] = hf_home
     os.environ["HUGGINGFACE_HUB_CACHE"] = hub_cache
 
-# GPU/CPU
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-try:
-    GPU_NAME = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
-    GPU_VRAM_GB = float(torch.cuda.get_device_properties(0).total_memory / 1024**3) if torch.cuda.is_available() else 0.0
-    GPU_VRAM = f"{GPU_VRAM_GB:.1f} GB" if torch.cuda.is_available() else "N/A"
-except Exception:
-    GPU_NAME = "Unknown"
-    GPU_VRAM = "N/A"
-    GPU_VRAM_GB = 0.0
-
-# NVIDIA Ampere+ (RTX 30xx/40xx) Acceleration
-if DEVICE == "cuda":
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    print("NVIDIA TF32 Acceleration Enabled (Massive speedup for RTX 3000/4000+ GPUs)")
+# GPU/CPU: lazy aliases above (get_device/get_gpu_info via __getattr__).
+# NOTE: `from config import DEVICE` triggers __getattr__ at import time and
+# binds a snapshot; long-lived modules should `import config` +
+# `config.get_device()` or `from config import get_device` instead.
+# __all__ includes the lazy names so `from config import *` keeps working.
+__all__ = [
+    "APP_NAME", "APP_VERSION", "BASE_DIR", "TEMP_DIR", "OUTPUT_DIR",
+    "MODELS_DIR", "VOICES_DIR", "DOWNLOADS_DIR", "ensure_dirs",
+    "get_device", "get_gpu_info", "configure_hf_cache", "DEVICE",
+    "GPU_NAME", "GPU_VRAM_GB", "GPU_VRAM",
+]
 
 # Synchronization constants
 TOLERANCE_TOO_LONG = 0.15    # 150ms: beyond this, adjust speed

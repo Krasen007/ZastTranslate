@@ -13,7 +13,7 @@ import time
 import re
 import gc
 from typing import Optional, Dict, Any, List
-from config import OUTPUT_DIR, MODELS_DIR, DEVICE
+from config import OUTPUT_DIR, MODELS_DIR
 
 class QwenImageGenerator:
     """

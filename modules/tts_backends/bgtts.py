@@ -34,7 +34,8 @@ import soundfile as sf
 from modules import quiet_flash_attn as _quiet_flash_attn  # noqa: F401
 
 from .base import TTSBackend
-from config import DEVICE, MODELS_DIR
+from config import MODELS_DIR
+import config
 
 # Pinned revisions keep downloads reproducible.
 BG_TTS_REPO = "beleata74/BgTTS-38M-V2"
@@ -71,7 +72,7 @@ class BgTTSBackend(TTSBackend):
 
     def __init__(self):
         super().__init__()
-        self.device = DEVICE
+        self.device = config.get_device()
         self._sample_rate = SAMPLE_RATE
         self._tokenizer: Any = None
         self._codec: Any = None

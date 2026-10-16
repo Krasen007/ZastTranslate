@@ -4,7 +4,8 @@ import threading
 import soundfile as sf
 import numpy as np
 from .base import TTSBackend
-from config import DEVICE, TEMP_DIR
+from config import TEMP_DIR
+import config
 
 _VOXCpm_DEFAULT_PROMPTS = {
     # Keep non-English defaults short and neutral so the cloned voice stays
@@ -26,7 +27,7 @@ _VOXCpm_GENDER_WORDS = {
 class VoxCPM2Backend(TTSBackend):
     def __init__(self):
         super().__init__()
-        self.device = DEVICE
+        self.device = config.get_device()
         self._sample_rate = None
         self._trimmed_ref_cache = {}
         self._trimmed_ref_lock = threading.Lock()

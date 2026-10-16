@@ -1,7 +1,11 @@
 # torch/torchaudio installed via torch.js
 gradio==6.*
 yt-dlp>=2024.0.0
-git+https://github.com/m-bain/whisperX.git
+# Pinned to whisperX v3.2.0 (tag 7307306): the TranscriptionOptions shim in
+# modules/transcriber.py targets this API (multilingual/hotwords kwargs);
+# floating master moved on (torchcodec>=0.6,<0.8) and broke resolution.
+# Re-pin deliberately after testing.
+whisperx @ git+https://github.com/m-bain/whisperX.git@7307306a9d8dd0d261e588cc933322454f853853
 # Pinned: whisperx 3.2.0's TranscriptionOptions defaults predate faster-whisper>=1.1's
 # required 'multilingual'/'hotwords' args; modules/transcriber.py shims them via asr_options.
 # Keep this pin until whisperx upstream includes the keys itself.
@@ -23,6 +27,14 @@ nvidia-cuda-runtime-cu12>=12.4.0
 # Required by whisperx's VAD stack (pyannote.audio checkpoint unpickling needs it);
 # missing on fresh installs -> "ModuleNotFoundError: No module named 'omegaconf'".
 omegaconf>=2.3.0
+# torchcodec is a transitive dep of pyannote-audio (torchcodec>=0.7.0, no upper
+# bound). Left unpinned, pip grabs the newest build, which requires a NEWER torch
+# than we ship and crashes at import with a Windows "Entry Point Not Found" dialog
+# (libtorchcodec_*.dll references symbols missing from libtorch_cpu.dll, e.g.
+# torch_dtype_float4_e2m1fn_x2). Keep it locked to the release matching torch 2.10
+# per https://github.com/meta-pytorch/torchcodec#compatibility-with-torch-versions
+# (0.17 -> torch>=2.11; 0.10 -> torch 2.10). Bump this only alongside torch.
+torchcodec==0.10.0
 sentencepiece
 protobuf
 demucs>=4.0.0

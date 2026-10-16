@@ -3,12 +3,13 @@ import os
 import soundfile as sf
 import numpy as np
 from .base import TTSBackend
-from config import DEVICE, TEMP_DIR
+from config import TEMP_DIR
+import config
 
 class Qwen3Backend(TTSBackend):
     def __init__(self):
         super().__init__()
-        self.device = DEVICE
+        self.device = config.get_device()
         self.voice_clone_prompt = None
 
     @property

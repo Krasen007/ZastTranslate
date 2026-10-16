@@ -25,7 +25,8 @@ import numpy as np
 import soundfile as sf
 
 from .base import TTSBackend
-from config import DEVICE, TEMP_DIR
+from config import TEMP_DIR
+import config
 
 # Native Bulgarian Edge voices, keyed by the app's gender radio labels.
 BULGARIAN_VOICES = {
@@ -59,7 +60,7 @@ class EdgeBulgarianBackend(TTSBackend):
 
     def __init__(self):
         super().__init__()
-        self.device = DEVICE
+        self.device = config.get_device()
         self._sample_rate = 24000
         self._warned_no_clone = False
 

@@ -50,6 +50,53 @@ logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
 logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
 logging.getLogger("whisperx").setLevel(logging.WARNING)
 
+# --- Silence benign Windows asyncio socket-reset noise at the source ---------
+# On Windows, Gradio/uvicorn runs on ProactorEventLoop. When a browser tab closes
+# (or a file download finishes), the transport cleanup callback
+# _ProactorBasePipeTransport._call_connection_lost() calls sock.shutdown(), which
+# raises ConnectionResetError [WinError 10054] if the peer already dropped the
+# connection. asyncio surfaces that as
+# "Exception in callback ... _ProactorBasePipeTransport._call_connection_lost()",
+# which is pure noise — the FFmpeg render / file write has already completed.
+#
+# An event-loop exception handler does NOT catch this: app.launch() runs uvicorn
+# via asyncio.run(), which creates a *fresh* loop and discards the one a handler
+# was installed on. So we patch the transport method itself — loop-agnostic and
+# effective no matter which loop the server ends up using.
+import asyncio.proactor_events as _zast_proactor_events
+
+if hasattr(_zast_proactor_events, "_ProactorBasePipeTransport"):
+    _zast_orig_call_connection_lost = (
+        _zast_proactor_events._ProactorBasePipeTransport._call_connection_lost
+    )
+
+    def _zast_safe_call_connection_lost(self, exc):
+        try:
+            _zast_orig_call_connection_lost(self, exc)
+        except OSError:
+            # Peer already reset/closed the socket mid-cleanup. Finish the
+            # teardown by hand so the handle isn't leaked and the callback
+            # isn't re-entered, then swallow the noise.
+            sock = getattr(self, "_sock", None)
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                self._sock = None
+            server = getattr(self, "_server", None)
+            if server is not None:
+                try:
+                    server._detach(self)
+                except Exception:
+                    pass
+                self._server = None
+            self._called_connection_lost = True
+
+    _zast_proactor_events._ProactorBasePipeTransport._call_connection_lost = (
+        _zast_safe_call_connection_lost
+    )
+
 import gradio as gr
 import os
 import glob
@@ -127,6 +174,23 @@ def _get_iso_code(lang_code):
         return _NLLB_TO_ISO[lang_code]
     # Whisper-style short code (en, fr, es...)
     return lang_code[:2].upper()
+
+# ISO 639-1 -> ISO 639-2/T for ffmpeg softsub language metadata.
+_ISO1_TO_ISO2 = {
+    "FR": "fra", "EN": "eng", "ES": "spa", "DE": "deu", "IT": "ita",
+    "PT": "por", "JA": "jpn", "KO": "kor", "ZH": "zho", "RU": "rus",
+    "AR": "ara", "HI": "hin", "NL": "nld", "PL": "pol", "TR": "tur",
+    "SV": "swe", "CS": "ces", "RO": "ron", "HU": "hun", "MY": "mya",
+    "DA": "dan", "FI": "fin", "EL": "ell", "HE": "heb", "ID": "ind",
+    "KM": "khm", "LO": "lao", "MS": "msa", "NO": "nor", "SW": "swa",
+    "TL": "tgl", "TH": "tha", "VI": "vie", "BG": "bul",
+}
+
+
+def _get_iso639_2(lang_code):
+    """Map any internal language code to ISO 639-2 for ffmpeg metadata."""
+    iso1 = _get_iso_code(lang_code)
+    return _ISO1_TO_ISO2.get(iso1, "und")
 
 def _get_segments_json():
     import json
@@ -363,7 +427,9 @@ _user_cps_overrides: dict = load_user_cps()
 
 def check_vram_warning(selected_backend: str) -> str:
     """Warn user if selecting a heavy model (e.g. Qwen3.5-9B) on a GPU with <= 8.5 GB VRAM."""
-    if GPU_VRAM_GB > 0 and GPU_VRAM_GB <= 8.5 and ("3.5" in selected_backend or "9B" in selected_backend):
+    import config as _cfg
+    _vram_gb = _cfg.get_gpu_info()[1]
+    if _vram_gb > 0 and _vram_gb <= 8.5 and ("3.5" in selected_backend or "9B" in selected_backend):
         return (
             "⚠️ Notice (GPU ≤ 8 GB VRAM detected): Qwen 3.5-9B is a large model (~6.5 GB). "
             "On Windows, computations risk spilling into Shared GPU Memory (system RAM), "
@@ -1561,7 +1627,7 @@ def ensure_vocals_and_reference_audio():
         except Exception as e:
             print(f"[WARN] Failed to extract reference audio: {e}")
 
-def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Woman", progress=gr.Progress()):
+def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Woman", subtitle_mode="Off", progress=gr.Progress()):
     if not state.translated_segments:
         return "Error: No translation available.", None, None, None, None, [], _get_empty_segments_html(), None, None, gr.update(interactive=False)
 
@@ -1695,10 +1761,23 @@ def step6_synthesize(voice_mode, voice_file, never_cut, default_voice_gender="Wo
         else:
             progress(0.9, "Assembling final video...")
             final_video = os.path.join(OUTPUT_DIR, f"final_video_{iso}.mp4")
+            fitted_srt = os.path.join(OUTPUT_DIR, f"fitted_{iso}.srt")
+            srt_arg = fitted_srt if os.path.exists(fitted_srt) else None
+            mode = (subtitle_mode or "Off").strip().lower()
+            if mode not in ("off", "soft", "burn"):
+                mode = "off"
+            sub_kwargs = {}
+            if srt_arg and mode != "off":
+                sub_kwargs = {
+                    "srt_path": srt_arg,
+                    "hardsub": mode == "burn",
+                    "sub_language": _get_iso639_2(tgt_lang),
+                }
             video_assembler.assemble(
                 state.video_info['video_path'], 
                 mixed_audio, 
-                final_video
+                final_video,
+                **sub_kwargs
             )
             df_data = _build_dubbing_df_data()
             return status, gr.update(visible=True, value=final_video), mixed_audio, gr.update(visible=True, value=final_video), gr.update(visible=False, value=None), df_data, _get_segments_json_html(), final_video, final_audio_export, gr.update(interactive=True)
@@ -4832,6 +4911,13 @@ with gr.Blocks(title="ZastTranslate") as app:
                 with gr.Group(elem_classes=["zast-card"]):
                     gr.Markdown(f"### 🎬 3. Master Assembly & Video Render {zast_tooltip('Demucs separates background music and noise, mixes the synthesized voice, and renders the 1080p master MP4.')} <span class='zast-pill zast-pill-success'>Demucs Separation</span>")
                     with gr.Row():
+                        subtitle_mode = gr.Radio(
+                            ["Off", "Soft", "Burn"],
+                            label="Subtitles",
+                            value="Off",
+                            info="Off: no subtitles. Soft: muxable SRT track (instant copy). Burn: hardcode into pixels (re-encode).",
+                        )
+                    with gr.Row():
                         btn_synth = gr.Button("🎬 Assemble Final Video & Audio", interactive=False, variant="primary", elem_id="btn_assemble_video")
                     synth_status = gr.Textbox(label="Status", interactive=False)
                     with gr.Row():
@@ -5697,12 +5783,13 @@ with gr.Blocks(title="ZastTranslate") as app:
                     )
                     
                 with gr.Accordion("⚙️ System requirements", open=False):
+                    _gpu_name, _gpu_gb, _gpu_vram = get_gpu_info()
                     gr.Markdown(
                         "- **GPU**: NVIDIA GPU with 4+ GB VRAM recommended (CUDA)\n"
                         "- **CPU**: Works on CPU but significantly slower\n"
                         "- **Disk**: ~8 GB for AI models (downloaded on first use)\n"
                         "- **OS**: **Tested on Windows only**. May work on Linux/macOS but untested.\n"
-                        f"\n**Current system**: {GPU_NAME} ({GPU_VRAM}) — {'CUDA ✅' if DEVICE == 'cuda' else 'CPU mode ⚠️'}"
+                        f"\n**Current system**: {_gpu_name} ({_gpu_vram}) — {'CUDA ✅' if get_device() == 'cuda' else 'CPU mode ⚠️'}"
                     )
                 
                 with gr.Accordion("⚙️ Config CPS tab", open=False):
@@ -6113,7 +6200,7 @@ with gr.Blocks(title="ZastTranslate") as app:
     
     btn_synth.click(
         step6_synthesize, 
-        [voice_mode, voice_file, never_cut_mode, default_voice_gender], 
+        [voice_mode, voice_file, never_cut_mode, default_voice_gender, subtitle_mode],
         [
             synth_status, final_video_out, final_audio_out, video_preview, audio_preview,
             dubbing_segments_df, segments_json_holder, export_video_file, export_audio_file,
@@ -6991,6 +7078,9 @@ if __name__ == "__main__":
     # Configure HuggingFace cache once at startup (not at module import time).
     # Redirects HF_HOME / HUGGINGFACE_HUB_CACHE to ~/.zasttranslate/models
     # so downloads don't bloat the user's global ~/.cache/huggingface.
+    # ensure_dirs() creates temp/output/models/voices/downloads (lazy since
+    # config.py no longer makedirs at import time).
+    ensure_dirs()
     configure_hf_cache()
 
     port = int(os.environ.get("GRADIO_SERVER_PORT", 7860))

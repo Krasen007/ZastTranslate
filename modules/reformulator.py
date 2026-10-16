@@ -1,6 +1,6 @@
 import torch
 import re
-from config import DEVICE, CHARS_PER_SECOND
+from config import CHARS_PER_SECOND
 from modules.llm_backends import get_backend
 
 class Reformulator:

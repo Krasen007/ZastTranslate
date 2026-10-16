@@ -3,7 +3,8 @@ import torch
 import os
 import subprocess
 from modules.utils import cleanup_model
-from config import DEVICE, TEMP_DIR
+from config import TEMP_DIR
+import config
 
 class VocalSeparator:
     def __init__(self, model_name="htdemucs"):
@@ -112,7 +113,7 @@ class VocalSeparator:
             sys.executable, "-m", "demucs",
             "-n", self.model_name,
             "--out", TEMP_DIR,
-            "--device", DEVICE,
+            "--device", config.get_device(),
             "--two-stems", "vocals",
             audio_path
         ]

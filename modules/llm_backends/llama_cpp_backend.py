@@ -3,7 +3,7 @@ import sys
 import gc
 import torch
 from .base import LLMBackend
-from config import DEVICE
+import config
 
 # Configure CUDA DLL directory for Windows
 if hasattr(os, "add_dll_directory"):
@@ -76,7 +76,7 @@ class LlamaCppBackend(LLMBackend):
         os.makedirs(models_dir, exist_ok=True)
         
         # Calculate GPU layers: -1 for all layers on GPU if CUDA
-        n_gpu = -1 if DEVICE == "cuda" else 0
+        n_gpu = -1 if config.get_device() == "cuda" else 0
 
         # Manual-model support: if filename is an absolute local .gguf file,
         # load it directly instead of downloading from the Hub.

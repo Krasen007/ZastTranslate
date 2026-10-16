@@ -7,8 +7,9 @@ from modules.utils import get_exact_duration
 from config import (
     TOLERANCE_TOO_LONG, MIN_SEGMENT_DURATION, TEMP_DIR,
     OUTPUT_SAMPLE_RATE, CHARS_PER_SECOND, MAX_SPEED_FACTOR,
-    NEVER_CUT_WARNING, GPU_VRAM_GB
+    NEVER_CUT_WARNING,
 )
+import config
 
 # Two-pass: natural voice first, native speed instruction if overflow
 
@@ -210,11 +211,12 @@ class TimeSync:
                 # PASS 2+: LLM reformulation loop if audio is too long (SPEC §N.2 — max 3 attempts)
                 # Shield: on <= 8.5 GB GPUs, avoid reloading heavy LLM while TTS model is active in VRAM to prevent system RAM spillover
                 can_use_llm = self.reformulator is not None
-                if can_use_llm and GPU_VRAM_GB > 0 and GPU_VRAM_GB <= 8.5:
+                _vram_gb = config.get_gpu_info()[1]
+                if can_use_llm and _vram_gb > 0 and _vram_gb <= 8.5:
                     if getattr(self.reformulator, "llm", None) is None and getattr(self.tts, "model", None) is not None:
                         can_use_llm = False
                         if not getattr(self, "_vram_shield_warned", False):
-                            print(f"[VRAM Shield] GPU ≤ 8.5 GB ({GPU_VRAM_GB:.1f} GB): skipping live LLM reload during TTS to prevent system RAM spillover. Relying on gap absorption & crossfade.")
+                            print(f"[VRAM Shield] GPU ≤ 8.5 GB ({_vram_gb:.1f} GB): skipping live LLM reload during TTS to prevent system RAM spillover. Relying on gap absorption & crossfade.")
                             self._vram_shield_warned = True
 
                 if overflow > TOLERANCE_TOO_LONG and effective_duration > MIN_SEGMENT_DURATION and can_use_llm:

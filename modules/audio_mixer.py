@@ -1,51 +1,141 @@
-import soundfile as sf
-import numpy as np
-import librosa
 import os
 import subprocess
+import tempfile
+
+import numpy as np
+import soundfile as sf
+
 from config import OUTPUT_SAMPLE_RATE, OUTPUT_CHANNELS
 
+# Frames per processing block (~30 s at 44.1 kHz stereo float32 ~= 10 MB),
+# so even 1 h+ tracks mix in constant memory.
+_BLOCK_FRAMES = OUTPUT_SAMPLE_RATE * 30
+# Voice activity threshold for ducking (~-40 dBFS RMS).
+_DUCK_THRESHOLD_RMS = 0.01
+
+
+def _run_ffmpeg(args, timeout=600):
+    subprocess.run(
+        ["ffmpeg", "-y", *args],
+        check=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+
+
+def _to_stereo_44k(src_path, dst_path):
+    """Normalize any input to 44.1 kHz stereo PCM WAV (streaming ffmpeg)."""
+    _run_ffmpeg([
+        "-i", src_path,
+        "-ar", str(OUTPUT_SAMPLE_RATE),
+        "-ac", str(OUTPUT_CHANNELS),
+        "-c:a", "pcm_s16le",
+        dst_path,
+    ])
+
+
+def _loop_background_on_disk(bg_norm_path, voice_frames, dst_path):
+    """Loop a short background on disk to cover ``voice_frames`` frames.
+
+    Uses ffmpeg ``-stream_loop`` so tiling happens in the ffmpeg process —
+    never as an ``np.tile`` in RAM.
+    """
+    bg_info = sf.info(bg_norm_path)
+    if bg_info.frames <= 0:
+        raise ValueError(f"Background audio has no frames: {bg_norm_path}")
+    loops = int((voice_frames + bg_info.frames - 1) // bg_info.frames)
+    duration_s = voice_frames / float(OUTPUT_SAMPLE_RATE)
+    _run_ffmpeg([
+        "-stream_loop", str(max(loops, 0)),
+        "-i", bg_norm_path,
+        "-t", f"{duration_s:.3f}",
+        "-ar", str(OUTPUT_SAMPLE_RATE),
+        "-ac", str(OUTPUT_CHANNELS),
+        "-c:a", "pcm_s16le",
+        dst_path,
+    ])
+
+
 class AudioMixer:
-    def mix(self, voice_path, background_path, output_path, voice_volume_db=0, bg_volume_db=-6):
+    def mix(self, voice_path, background_path, output_path,
+            voice_volume_db=0, bg_volume_db=-6, ducking=False,
+            duck_extra_db=6.0, block_frames=_BLOCK_FRAMES):
         """
-        Mix voice and background audio.
+        Mixing is block-wise: both inputs are normalized to 44.1 kHz
+        stereo on disk via ffmpeg (no full-file librosa.load), a short
+        background is looped on disk via -stream_loop (no np.tile in
+        RAM), then soundfile streams both tracks in ~30 s blocks.
+        ducking=True applies extra bg attenuation where voice is active.
         """
-        # Load voice
-        v_audio, sr_v = librosa.load(voice_path, sr=OUTPUT_SAMPLE_RATE, mono=False)
-        # Load background
-        bg_audio, sr_bg = librosa.load(background_path, sr=OUTPUT_SAMPLE_RATE, mono=False)
+        if not os.path.exists(voice_path):
+            raise FileNotFoundError(f"Voice track not found: {voice_path}")
+        if not os.path.exists(background_path):
+            raise FileNotFoundError(f"BG track not found: {background_path}")
+        if block_frames <= 0:
+            raise ValueError("block_frames must be positive")
 
-        # Convertir en stereo si mono
-        if v_audio.ndim == 1:
-            v_audio = np.stack([v_audio, v_audio])
-        if bg_audio.ndim == 1:
-            bg_audio = np.stack([bg_audio, bg_audio])
-
-        # Adjust lengths: reference is the voice (already synced with video)
-        target_len = v_audio.shape[1]
-        bg_len = bg_audio.shape[1]
-
-        if bg_len < target_len:
-            # Loop background if too short
-            repeats = int(np.ceil(target_len / bg_len))
-            bg_audio = np.tile(bg_audio, (1, repeats))[:, :target_len]
-        else:
-            # Truncate background if too long
-            bg_audio = bg_audio[:, :target_len]
-
-        # Apply gains
         v_gain = 10 ** (voice_volume_db / 20)
         bg_gain = 10 ** (bg_volume_db / 20)
-        
-        mixed = (v_audio * v_gain) + (bg_audio * bg_gain)
-        
-        # Clip to int16 range instead of renormalizing the whole mix:
-        # renormalization would destroy the voice/BG balance the user set.
-        mixed = np.clip(mixed, -1.0, 1.0)
+        duck_lin = 10 ** (-abs(duck_extra_db) / 20)
 
-        # Write (transpose for soundfile: shape (samples, channels))
-        sf.write(output_path, mixed.T, OUTPUT_SAMPLE_RATE, subtype='PCM_16')
-        
+        tmp_dir = tempfile.mkdtemp(prefix="mix_")
+        voice_norm = os.path.join(tmp_dir, "voice_44k.wav")
+        bg_norm = os.path.join(tmp_dir, "bg_44k.wav")
+        bg_looped = os.path.join(tmp_dir, "bg_looped.wav")
+        try:
+            _to_stereo_44k(voice_path, voice_norm)
+            _to_stereo_44k(background_path, bg_norm)
+            target_frames = sf.info(voice_norm).frames
+            if target_frames <= 0:
+                raise ValueError(f"Voice track empty: {voice_path}")
+            bg_mix_path = bg_norm
+            if sf.info(bg_norm).frames < target_frames:
+                _loop_background_on_disk(bg_norm, target_frames, bg_looped)
+                bg_mix_path = bg_looped
+
+            cur_duck = 1.0
+            with sf.SoundFile(voice_norm, "r") as vf, \
+                    sf.SoundFile(bg_mix_path, "r") as bf, \
+                    sf.SoundFile(output_path, "w",
+                                 samplerate=OUTPUT_SAMPLE_RATE,
+                                 channels=OUTPUT_CHANNELS,
+                                 subtype="PCM_16") as out:
+                while True:
+                    v_block = vf.read(block_frames, dtype="float32",
+                                      always_2d=True)
+                    b_block = bf.read(block_frames, dtype="float32",
+                                      always_2d=True)
+                    if len(v_block) == 0:
+                        break
+                    n = len(v_block)
+                    if len(b_block) < n:
+                        pad = np.zeros((n - len(b_block), OUTPUT_CHANNELS),
+                                       dtype=np.float32)
+                        b_block = np.concatenate([b_block, pad], axis=0)
+                    else:
+                        b_block = b_block[:n]
+                    if ducking:
+                        rms = float(np.sqrt(np.mean(v_block ** 2) + 1e-12))
+                        tgt = duck_lin if rms > _DUCK_THRESHOLD_RMS else 1.0
+                        c = 0.7 if tgt < cur_duck else 0.15
+                        cur_duck = (1.0 - c) * cur_duck + c * tgt
+                        b_block = b_block * cur_duck
+                    mixed = (v_block * v_gain) + (b_block * bg_gain)
+                    # Clip, don't renormalize: renormalization would destroy
+                    # the voice/BG balance the user set.
+                    np.clip(mixed, -1.0, 1.0, out=mixed)
+                    out.write(mixed)
+        finally:
+            for p in (voice_norm, bg_norm, bg_looped):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
         return output_path
 
     def export_for_youtube(self, mixed_path, output_dir, basename):

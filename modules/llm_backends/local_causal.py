@@ -2,7 +2,7 @@ import torch
 import gc
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from .base import LLMBackend
-from config import DEVICE
+import config
 
 class LocalCausalLMBackend(LLMBackend):
     def __init__(self, name: str, model_id: str, capabilities: dict):
@@ -10,7 +10,7 @@ class LocalCausalLMBackend(LLMBackend):
         self._name = name
         self.model_id = model_id
         self._capabilities = capabilities
-        self.device = DEVICE
+        self.device = config.get_device()
 
     @property
     def name(self) -> str:

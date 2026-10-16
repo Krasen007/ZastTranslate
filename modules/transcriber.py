@@ -50,7 +50,7 @@ _expose_cuda12_dll_dirs()
 import whisperx
 import torch
 from modules.utils import cleanup_model
-from config import DEVICE, GPU_VRAM
+import config
 
 # --- Compat: whisperx 3.2.x VAD vs pyannote.audio 4.x ------------------------
 # whisperx's VoiceActivitySegmentation.__init__ declares `use_auth_token` as an
@@ -305,8 +305,8 @@ def merge_orphan_punctuation_segments(segments):
 class Transcriber:
     def __init__(self, model_size="large-v3", compute_type="float16"):
         self.model_size = model_size
-        self.compute_type = compute_type if DEVICE == "cuda" else "int8"
-        self.device = DEVICE
+        self.compute_type = compute_type if config.get_device() == "cuda" else "int8"
+        self.device = config.get_device()
 
     @staticmethod
     def _compat_asr_options(model_size, language):

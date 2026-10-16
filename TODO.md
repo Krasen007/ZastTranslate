@@ -15,36 +15,44 @@ remain briefly documented for traceability.
 - **Payoff:** reviewable diffs, testable pipeline functions without importing
   Gradio, no more merge conflicts on a 7k-line file.
 
-### 2. `AudioMixer` block-wise streaming (long-video OOM)
-- **Why deferred:** needs real audio-engineering testing (crossfade/loop
-  correctness on 1h+ tracks); the balance bug (renormalization) is already
-  fixed in `993b781`.
-- **Approach:** replace full-file `librosa.load` + `np.tile` with block-wise
-  `soundfile` reads; loop the background on disk (ffmpeg `aloop`) instead of
-  tiling in RAM; optional loudness-based ducking (voice −3 dB / BG −9 dB)
-  instead of fixed gains.
+### 2. `AudioMixer` block-wise streaming (long-video OOM) — DONE
+- Replaced full-file `librosa.load` + `np.tile` with: ffmpeg normalize to
+  44.1 kHz stereo on disk, ffmpeg `-stream_loop` background looping on disk,
+  then block-wise `soundfile` streaming (~30 s blocks, ~10 MB RAM constant).
+- Added optional `ducking=True` (extra BG attenuation where voice is active,
+  attack/release smoothed) alongside the preserved default gains.
+- Balance-bug fix (clip, don't renormalize) retained from `993b781`.
 
-### 3. `config.py` lazy initialization
-- **Why deferred:** `import torch` + `os.makedirs` at module top are consumed
-  at import time by all 35 modules; safe laziness needs a coordinated pass.
-- **Approach:** `ensure_dirs()` called from `app.py` main; `DEVICE`/`GPU_*`
-  behind a `get_device()` helper with cached property; keep module-level
-  aliases for backward compatibility during transition.
+### 3. `config.py` lazy initialization — DONE
+- `import torch` + `os.makedirs` no longer run at import time: torch loads
+  lazily inside `get_device()`/`get_gpu_info()` (cached), dirs via
+  `ensure_dirs()` called once from `app.py` main.
+- `DEVICE`/`GPU_NAME`/`GPU_VRAM_GB`/`GPU_VRAM` kept as lazy `__getattr__`
+  aliases (+ `__all__` so `from config import *` works); all in-repo
+  `from config import DEVICE` call sites switched to `config.get_device()`
+  (separator, transcriber, reformulator, qwen, all TTS/LLM backends,
+  time_sync VRAM shield, app.py warning + help text, video_assembler).
 
 ## Medium priority
 
-### 4. Wire subtitles into the final `assemble()` call
-- `modules/video_assembler.py` supports `srt_path` / `hardsub` /
-  `sub_language` (added in `993b781`), but the only caller (`app.py:1800`)
-  passes video+audio only — the burn-in/softsub path is currently dead code.
-- **Approach:** add a UI toggle (Off / Soft / Burn) on the Dubbing tab; pass
-  the fitted SRT + target ISO language (drop the `fre` default once wired).
+### 4. Wire subtitles into the final `assemble()` call — DONE
+- Added Off / Soft / Burn `subtitle_mode` radio on the Dubbing tab; the
+  single-dub `step6_synthesize` path now passes the fitted SRT
+  (`output/fitted_{ISO}.srt`) + ISO 639-2 language (`_get_iso639_2`, new
+  ISO-1→ISO-2 map) to `video_assembler.assemble()`.
+- Default `sub_language` changed `fre` → `und` so unwired callers (bulk,
+  regen) no longer mislabel tracks as French.
+- Bulk + regen paths intentionally unchanged (no subtitle toggle there yet).
 
-### 6. Dependency pinning for reproducible installs
-- `requirements.txt` pins versions now, but `git+https://github.com/m-bain/whisperX.git`
-  and `faster-whisper` remain floating relative to their upstream commits.
-- **Approach:** pin whisperx to a commit SHA; produce a `uv.lock` /
-  `requirements.lock` with hashes for release tags.
+### 6. Dependency pinning for reproducible installs — PARTIAL
+- `whisperx` now pinned to v3.2.0 tag SHA `7307306a...` in requirements.txt
+  (was floating `git+...whisperX.git` master, which moved to
+  torchcodec>=0.6,<0.8 and broke resolution against our torchcodec==0.10.0).
+  `faster-whisper==1.2.1` was already pinned.
+- No `requirements.lock` with hashes: `uv pip compile` cannot build the
+  whisperx v3.2.0 sdist (setuptools build needs git metadata), so a hash
+  lock is not generatable in this env. Revisit with a wheel mirror or
+  `--no-build` lock at release time.
 
 
 

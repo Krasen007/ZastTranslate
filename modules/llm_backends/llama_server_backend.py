@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import torch
 from .base import LLMBackend
-from config import DEVICE
+import config as _config  # noqa: F401 (kept: DEVICE via lazy alias)
 
 # Configure CUDA DLL directory for Windows (mirrors the other backends so any
 # lazy CUDA init in this process can resolve torch's bundled DLLs).
